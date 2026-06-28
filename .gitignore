@@ -1,0 +1,41 @@
+# ─── Dart / Flutter ──────────────────────────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+pubspec.lock
+
+# Build çıktıları
+build/
+*.apk
+*.aab
+*.ipa
+
+# ─── IDE ─────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+
+# ─── Android ─────────────────────────────────────────────────────────────────
+android/.gradle/
+android/local.properties
+android/key.properties
+android/app/debug.keystore
+android/captures/
+android/.idea/
+android/app/src/main/assets/flutter_assets/
+
+# ─── iOS / macOS ─────────────────────────────────────────────────────────────
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+macos/Pods/
+
+# ─── Büyük model dosyaları (indirilerek eklenir, repoya konmaz) ───────────────
+assets/models/hand_landmarker.task
+
+# ─── Geçici / işletim sistemi ────────────────────────────────────────────────
+*.DS_Store
+Thumbs.db
+*.log

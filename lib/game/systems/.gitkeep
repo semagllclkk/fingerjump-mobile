@@ -1,0 +1,13 @@
+/// game/systems/
+///
+/// Systems contain pure logic that operates across multiple components.
+///
+/// Planned systems:
+///   • ScrollingSystem  — moves the camera upward as the player rises (Phase 4)
+///   • SpawnSystem      — procedurally places new platforms (Phase 5)
+///   • BossSystem       — controls arena lock and boss AI (Phase 6)
+///   • InputSystem      — translates raw input into a normalized X value (Phase 7+)
+///
+/// Systems intentionally do NOT extend FlameComponent.
+/// They are plain Dart classes, which makes them easy to test in isolation.
+library;

@@ -1,0 +1,13 @@
+/// ui/
+///
+/// Flutter widgets overlaid on top of the Flame canvas.
+///
+/// Planned widgets:
+///   • HudWidget       — score + distance meter (Phase 4)
+///   • BossHealthBar   — boss HP strip at the top of the screen (Phase 6)
+///   • MainMenuScreen  — title screen with start button (post-MVP)
+///
+/// These are normal Flutter StatelessWidget / StatefulWidget classes.
+/// They communicate with the game through a shared ViewModel or via
+/// Flame's GameWidget overlays API.
+library;

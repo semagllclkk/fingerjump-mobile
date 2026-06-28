@@ -1,0 +1,14 @@
+/// services/
+///
+/// Services are long-lived objects that communicate with platform APIs
+/// or external hardware.
+///
+/// Planned services:
+///   • GyroscopeService   — reads device tilt, emits normalized X (Phase 7)
+///   • CameraService      — streams camera frames (Phase 8)
+///   • HandTrackingService — runs ML model, emits finger X (Phase 8)
+///
+/// Key contract:
+///   Every service must expose a Stream<double> (normalizedX) so the
+///   InputSystem can subscribe without knowing the source.
+library;

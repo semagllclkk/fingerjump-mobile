@@ -1,0 +1,11 @@
+/// game/components/
+///
+/// This folder will hold all Flame Component subclasses:
+///   • PlayerComponent   — the jumping blue rectangle (Phase 2)
+///   • PlatformComponent — the green rectangle the player lands on (Phase 3)
+///   • BossComponent     — the red rectangle boss (Phase 6)
+///   • ProjectileComponent — yellow circle attack (Phase 6)
+///
+/// Each component is self-contained: it owns its own rendering and update
+/// logic and communicates with the game only through events or shared state.
+library;
