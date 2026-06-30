@@ -66,7 +66,7 @@ class CameraHandService {
       front,
       ResolutionPreset.low,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg, // NV21 yerine JPEG — tüm cihazlarda çalışır
+      imageFormatGroup: ImageFormatGroup.yuv420, // JPEG desteklenmeyen cihazlarda YUV420 kullan
     );
     await _cam!.initialize();
 
@@ -106,10 +106,16 @@ class CameraHandService {
   // ─── Frame gönderme ──────────────────────────────────────────────────────────
 
   void _sendFrame(CameraImage image) {
-    // JPEG formatında tüm veri planes[0]'da bulunur.
-    // NV21'in aksine renk bilgisi mevcuttur → MediaPipe el tespiti düzgün çalışır.
+    if (image.planes.length < 3) return;
+    // YUV420: planes[0]=Y, planes[1]=U, planes[2]=V
+    // Kotlin tarafı NV21 formatuna çevirir → YuvImage → Bitmap → MediaPipe
     _channel.invokeMethod('processFrame', {
-      'bytes': image.planes[0].bytes,
+      'y': image.planes[0].bytes,
+      'u': image.planes[1].bytes,
+      'v': image.planes[2].bytes,
+      'yRowStride': image.planes[0].bytesPerRow,
+      'uvRowStride': image.planes[1].bytesPerRow,
+      'uvPixelStride': image.planes[1].bytesPerPixel ?? 1,
       'width': image.width,
       'height': image.height,
     });

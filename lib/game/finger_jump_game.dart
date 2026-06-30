@@ -116,8 +116,6 @@ class FingerJumpGame extends FlameGame
 
     _updateScore();
     _checkFallGameOver();
-    // Kamera ve platform üretimi boss aktifken de devam eder —
-    // oyuncu doğal akışla boss'a ulaşır, ışınlanma olmaz.
     _scrollCamera(dt);
     _spawnMorePlatforms();
     _despawnOldPlatforms();
@@ -131,9 +129,10 @@ class FingerJumpGame extends FlameGame
 
   // ─── Game Over kontrolleri ───────────────────────────────────────────────────
 
-  /// Oyuncu kameranın alt sınırının 10% altına düşerse → game over.
+  /// Oyuncu kamera alt sınırının %5 altına düşerse → game over.
+  /// Kamera artık aşağı drift etmediği için bu check gerçekten tetiklenir.
   void _checkFallGameOver() {
-    if (_player.position.y > _cameraTopY + size.y * 1.10) {
+    if (_player.position.y > _cameraTopY + size.y * 1.05) {
       triggerGameOver();
     }
   }
@@ -194,16 +193,13 @@ class FingerJumpGame extends FlameGame
     }
   }
 
-  /// Boss üretir. Normal oyun akışı bozulmaz:
-  /// arena platformu yoktur, kamera kilitlenmez.
-  /// Boss oyuncunun 1.4 ekran yüksekliği üstde spawn edilir;
-  /// oyuncu normal ziplama ile ulaşır.
+  /// Boss üretir ve arena moduna geçer:
+  ///   • Kamera kilitlenir — oyuncu dışarı çıkamaz.
+  ///   • Platform üretimi durur — boss'u zıplayarak geçemezsin.
+  ///   • Boss ekranın üst %25'inde çıkar; oyuncu zıplayarak ulaşır.
   void _spawnBoss() {
     _bossActive = true;
-    // Boss, kameranın üst kenarından biraz yukarıda (ya da daha da yakında) spawn edilir.
-    // 0.55 × ekran yüksekliği — kamera zaten oyuncuyu üst %40'ta tuttuğu için
-    // boss hemen görünür bölgeye girer; oyuncu normal zıplamayla ulaşır.
-    final bossY = _cameraTopY + size.y * 0.15;
+    final bossY = _cameraTopY + size.y * 0.25;
     world.add(BossComponent(
       position: Vector2(size.x / 2, bossY),
       level: _bossLevel,
@@ -220,19 +216,18 @@ class FingerJumpGame extends FlameGame
   // ─── Kamera ─────────────────────────────────────────────────────────────────
 
   void _scrollCamera(double dt) {
-    // Yukarı: oyuncu kameranın üst %40'ına yaklaşınca hemen takip et.
+    // Boss arena modu: kamera tamamen kilitlenir.
+    // Oyuncu ekran içinde kalır, boss'u geçemez, yukarı kaçamaz.
+    if (_bossActive) {
+      _applyCameraPosition();
+      return;
+    }
+
+    // Normal oyun: YALNIZCA yukarı takip.
+    // Aşağı drift KALDIRILDI — düşen oyuncu kameradan kayar → game over.
     final desiredTop = _player.position.y - size.y * 0.4;
     if (desiredTop < _cameraTopY) {
       _cameraTopY = desiredTop;
-    }
-
-    // Aşağı güvenlik: oyuncu kameranın alt sınırına yaklaşırsa
-    // kamera da yavaşça aşağı kayar (boost sonrası kamera kopması önlenir).
-    final cameraBottom = _cameraTopY + size.y;
-    final playerPad = size.y * 0.15; // oyuncunun altında 15% boşluk bırak
-    if (_player.position.y > cameraBottom - playerPad) {
-      final drift = (_player.position.y - (cameraBottom - playerPad)) * 0.08;
-      _cameraTopY += drift.clamp(0.0, size.y * 0.1);
     }
 
     _applyCameraPosition();
@@ -245,6 +240,8 @@ class FingerJumpGame extends FlameGame
   // ─── Platform üretimi ────────────────────────────────────────────────────────
 
   void _spawnMorePlatforms() {
+    // Boss aktifken yeni platform üretme — oyuncu boss arenasından kaçamaz.
+    if (_bossActive) return;
     _spawnPlatformsUpTo(_cameraTopY - size.y * _spawnLookahead);
   }
 

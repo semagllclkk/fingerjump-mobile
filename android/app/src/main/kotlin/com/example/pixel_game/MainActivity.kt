@@ -2,7 +2,10 @@ package com.example.pixel_game
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
 import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.YuvImage
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -12,6 +15,7 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 class MainActivity : FlutterActivity() {
@@ -52,10 +56,15 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "processFrame" -> {
-                        val bytes  = call.argument<ByteArray>("bytes")!!
-                        val width  = call.argument<Int>("width")!!
-                        val height = call.argument<Int>("height")!!
-                        processFrame(bytes, width, height)
+                        val y            = call.argument<ByteArray>("y")!!
+                        val u            = call.argument<ByteArray>("u")!!
+                        val v            = call.argument<ByteArray>("v")!!
+                        val yRowStride   = call.argument<Int>("yRowStride")!!
+                        val uvRowStride  = call.argument<Int>("uvRowStride")!!
+                        val uvPixelStride = call.argument<Int>("uvPixelStride")!!
+                        val width        = call.argument<Int>("width")!!
+                        val height       = call.argument<Int>("height")!!
+                        processFrame(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -70,11 +79,6 @@ class MainActivity : FlutterActivity() {
     }
 
     // ─── MediaPipe başlatma ──────────────────────────────────────────────────────
-    // setModelAssetBuffer kullanıyoruz: dosyayı Java'da okuyoruz → hata native
-    // crash değil yakalanabilir IOException olarak gelir.
-    //
-    // Flutter APK'da asset yolu: flutter_assets/assets/models/hand_landmarker.task
-    // (pubspec.yaml'daki "assets/models/" tanımı bu yolda sonuçlanır)
 
     private fun initMediaPipe() {
         val assetPath = "flutter_assets/assets/models/hand_landmarker.task"
@@ -100,20 +104,65 @@ class MainActivity : FlutterActivity() {
         handLandmarker = HandLandmarker.createFromOptions(this, options)
     }
 
-    // Flutter JPEG formatında gönderdiği için doğrudan Bitmap'e decode edilir.
-    // Ön kamera portrait modunda görüntü 90° dönük gelir → MediaPipe algılayamaz.
-    // 90° döndürme + yatay flip ile el doğru yöne getirilir.
-    private fun processFrame(jpegBytes: ByteArray, width: Int, height: Int) {
+    // ─── YUV420 → NV21 dönüşümü ─────────────────────────────────────────────────
+    //
+    // Flutter camera paketi Android'de YUV_420_888 formatı kullanır (yuv420).
+    // Y, U, V plane'leri ayrı ByteArray olarak gelir; stride değerleri farklı olabilir.
+    // NV21 = Y plane + interleaved VU plane → YuvImage → JPEG → Bitmap zinciri ile
+    // MediaPipe'ın beklediği Bitmap elde edilir.
+
+    private fun yuv420ToNv21(
+        y: ByteArray, u: ByteArray, v: ByteArray,
+        yRowStride: Int, uvRowStride: Int, uvPixelStride: Int,
+        width: Int, height: Int
+    ): ByteArray {
+        val nv21 = ByteArray(width * height + 2 * (width / 2) * (height / 2))
+
+        // Y plane — her satır yRowStride genişliğinde, biz sadece width kadar kopyalarız.
+        if (yRowStride == width) {
+            System.arraycopy(y, 0, nv21, 0, width * height)
+        } else {
+            for (row in 0 until height) {
+                System.arraycopy(y, row * yRowStride, nv21, row * width, width)
+            }
+        }
+
+        // VU plane (NV21 sırası: V önce, U sonra)
+        var offset = width * height
+        for (row in 0 until height / 2) {
+            for (col in 0 until width / 2) {
+                nv21[offset++] = v[row * uvRowStride + col * uvPixelStride]
+                nv21[offset++] = u[row * uvRowStride + col * uvPixelStride]
+            }
+        }
+        return nv21
+    }
+
+    // ─── Frame işleme ────────────────────────────────────────────────────────────
+    //
+    // Ön kamera portrait modunda görüntü 90° dönük + ayna gelir.
+    // 90° CW döndürme + yatay flip ile el doğru yöne getirilir.
+
+    private fun processFrame(
+        y: ByteArray, u: ByteArray, v: ByteArray,
+        yRowStride: Int, uvRowStride: Int, uvPixelStride: Int,
+        width: Int, height: Int
+    ) {
         val lm = handLandmarker ?: return
-        if (frameCount++ % 2 != 0L) return        // her 2 frame'de 1 işle
+        if (frameCount++ % 2 != 0L) return   // her 2 frame'de 1 işle
 
         try {
-            val raw = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return
+            // YUV420 → NV21 → YuvImage → JPEG → Bitmap
+            val nv21 = yuv420ToNv21(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
+            val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
+            val baos = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, baos)
+            val raw = BitmapFactory.decodeByteArray(baos.toByteArray(), 0, baos.size()) ?: return
 
             // Ön kamera düzeltmesi: 90° CW + yatay ayna
             val mat = Matrix().apply {
                 postRotate(90f)
-                postScale(-1f, 1f)   // mirror flip (ön kamera)
+                postScale(-1f, 1f)
             }
             val bitmap = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, mat, true)
             raw.recycle()
@@ -122,7 +171,7 @@ class MainActivity : FlutterActivity() {
             val result: HandLandmarkerResult = lm.detect(mpImage)
             bitmap.recycle()
 
-            if (result == null || result.landmarks().isEmpty()) {
+            if (result.landmarks().isEmpty()) {
                 runOnUiThread { eventSink?.success(mapOf("found" to false, "isPunch" to false)) }
                 return
             }
