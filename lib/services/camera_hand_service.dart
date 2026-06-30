@@ -38,6 +38,12 @@ class CameraHandService {
   /// Önizleme widget'ı için kamera controller'ını döner.
   CameraController? get cameraController => _cam;
 
+  /// Parmak X pozisyonu (normalized 0–1). Overlay için.
+  final ValueNotifier<double?> fingerXNotifier = ValueNotifier<double?>(null);
+
+  /// Parmak Y pozisyonu (normalized 0–1). Overlay için.
+  final ValueNotifier<double?> fingerYNotifier = ValueNotifier<double?>(null);
+
   // ─── Yaşam döngüsü ──────────────────────────────────────────────────────────
 
   Future<bool> start() async {
@@ -60,7 +66,7 @@ class CameraHandService {
       front,
       ResolutionPreset.low,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.nv21,
+      imageFormatGroup: ImageFormatGroup.jpeg, // NV21 yerine JPEG — tüm cihazlarda çalışır
     );
     await _cam!.initialize();
 
@@ -93,18 +99,19 @@ class CameraHandService {
     _eventSub?.cancel();
     _channel.invokeMethod('stopTracking');
     _controller.normalizedX = 0.0;
+    fingerXNotifier.value = null;
+    fingerYNotifier.value = null;
   }
 
   // ─── Frame gönderme ──────────────────────────────────────────────────────────
 
   void _sendFrame(CameraImage image) {
-    // Sadece Y düzlemini gönder (gri tonlama yeterli, daha hızlı).
-    final plane = image.planes[0];
+    // JPEG formatında tüm veri planes[0]'da bulunur.
+    // NV21'in aksine renk bilgisi mevcuttur → MediaPipe el tespiti düzgün çalışır.
     _channel.invokeMethod('processFrame', {
-      'bytes': plane.bytes,
+      'bytes': image.planes[0].bytes,
       'width': image.width,
       'height': image.height,
-      'rotation': 270, // ön kamera portre modu
     });
   }
 
@@ -112,12 +119,20 @@ class CameraHandService {
 
   void _onHandEvent(dynamic data) {
     if (data is! Map) return;
-    final fingerX = (data['fingerX'] as num?)?.toDouble();
+    final found = data['found'] as bool? ?? false;
+    final fingerX = found ? (data['fingerX'] as num?)?.toDouble() : null;
+    final fingerY = found ? (data['fingerY'] as num?)?.toDouble() : null;
     final isPunch = data['isPunch'] as bool? ?? false;
+
+    fingerXNotifier.value = fingerX;
+    fingerYNotifier.value = fingerY;
 
     if (fingerX != null) {
       // [0,1] → [-1,1] dönüşümü. Ön kamera ayna görüntüsü — X ters çevrilir.
       _controller.normalizedX = (0.5 - fingerX) * 2.0;
+    } else {
+      // El kaybolduğunda x sıfırla (oyuncu durduğu yerde kalsın).
+      _controller.normalizedX = 0.0;
     }
 
     _detectPunch(isPunch);

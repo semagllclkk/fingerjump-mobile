@@ -1,9 +1,8 @@
 package com.example.pixel_game
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
+import android.graphics.Matrix
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -13,7 +12,6 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 
 class MainActivity : FlutterActivity() {
@@ -102,33 +100,43 @@ class MainActivity : FlutterActivity() {
         handLandmarker = HandLandmarker.createFromOptions(this, options)
     }
 
-    // ─── Frame işleme ────────────────────────────────────────────────────────────
-
-    private fun processFrame(nv21Bytes: ByteArray, width: Int, height: Int) {
+    // Flutter JPEG formatında gönderdiği için doğrudan Bitmap'e decode edilir.
+    // Ön kamera portrait modunda görüntü 90° dönük gelir → MediaPipe algılayamaz.
+    // 90° döndürme + yatay flip ile el doğru yöne getirilir.
+    private fun processFrame(jpegBytes: ByteArray, width: Int, height: Int) {
         val lm = handLandmarker ?: return
-        if (frameCount++ % 3 != 0L) return        // her 3 frame'de 1 işle
+        if (frameCount++ % 2 != 0L) return        // her 2 frame'de 1 işle
 
-        val yuv = YuvImage(nv21Bytes, ImageFormat.NV21, width, height, null)
-        val out = ByteArrayOutputStream()
-        yuv.compressToJpeg(Rect(0, 0, width, height), 80, out)
-        val bitmap = BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size())
+        try {
+            val raw = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size) ?: return
 
-        val mpImage = BitmapImageBuilder(bitmap).build()
-        val result: HandLandmarkerResult = lm.detect(mpImage) ?: return
+            // Ön kamera düzeltmesi: 90° CW + yatay ayna
+            val mat = Matrix().apply {
+                postRotate(90f)
+                postScale(-1f, 1f)   // mirror flip (ön kamera)
+            }
+            val bitmap = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, mat, true)
+            raw.recycle()
 
-        if (result.landmarks().isEmpty()) {
-            runOnUiThread { eventSink?.success(mapOf("fingerX" to null, "isPunch" to false)) }
-            return
-        }
+            val mpImage = BitmapImageBuilder(bitmap).build()
+            val result: HandLandmarkerResult = lm.detect(mpImage)
+            bitmap.recycle()
 
-        val landmarks = result.landmarks()[0]
-        val fingerX  = landmarks[8].x().toDouble()
-        val isFist   = fingerPairs.count { (tip, pip) ->
-            landmarks[tip].y() > landmarks[pip].y()
-        } >= 3
+            if (result == null || result.landmarks().isEmpty()) {
+                runOnUiThread { eventSink?.success(mapOf("found" to false, "isPunch" to false)) }
+                return
+            }
 
-        runOnUiThread {
-            eventSink?.success(mapOf("fingerX" to fingerX, "isPunch" to isFist))
-        }
+            val landmarks = result.landmarks()[0]
+            val fingerX = landmarks[8].x().toDouble()
+            val fingerY = landmarks[8].y().toDouble()
+            val isFist  = fingerPairs.count { (tip, pip) ->
+                landmarks[tip].y() > landmarks[pip].y()
+            } >= 3
+
+            runOnUiThread {
+                eventSink?.success(mapOf("found" to true, "fingerX" to fingerX, "fingerY" to fingerY, "isPunch" to isFist))
+            }
+        } catch (_: Exception) { /* sessizce geç */ }
     }
 }

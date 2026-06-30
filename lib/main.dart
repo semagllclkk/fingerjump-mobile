@@ -8,6 +8,7 @@ import 'package:pixel_game/game/finger_jump_game.dart';
 import 'package:pixel_game/services/camera_hand_service.dart';
 import 'package:pixel_game/services/gyroscope_service.dart';
 import 'package:pixel_game/ui/hud_widget.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -401,14 +402,43 @@ class _GameScreenState extends State<GameScreen> {
   GyroscopeService? _gyro;
   CameraHandService? _camera;
 
+  bool _isGameOver = false;
+  int _finalScore = 0;
+  int _highScore = 0;
+
   @override
   void initState() {
     super.initState();
     _game = FingerJumpGame();
+    _loadHighScore();
     _initServices();
   }
 
+  Future<void> _loadHighScore() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (mounted) setState(() => _highScore = prefs.getInt('highScore') ?? 0);
+  }
+
+  Future<void> _saveHighScore(int score) async {
+    if (score > _highScore) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('highScore', score);
+      if (mounted) setState(() => _highScore = score);
+    }
+  }
+
   Future<void> _initServices() async {
+    // Game over → Flutter katmanına bildir
+    _game.onGameOver = () {
+      if (!mounted) return;
+      final score = _game.scoreNotifier.value;
+      _saveHighScore(score);
+      setState(() {
+        _isGameOver = true;
+        _finalScore = score;
+      });
+    };
+
     if (widget.mode == ControlMode.gyroscope) {
       _gyro = GyroscopeService(_game.inputController);
       _gyro!.start();
@@ -420,13 +450,19 @@ class _GameScreenState extends State<GameScreen> {
           const SnackBar(content: Text('Kamera izni gerekli!')),
         );
       } else if (mounted) {
-        // Kamera hazır — önizlemeyi tetikle.
         setState(() {});
       }
     }
 
-    // Her iki modda da onPunch → ateş bağlantısı.
     _game.inputController.onPunch = _game.fireFromPunch;
+  }
+
+  void _restart() {
+    _gyro?.stop();
+    _camera?.stop();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => GameScreen(mode: widget.mode)),
+    );
   }
 
   @override
@@ -448,38 +484,375 @@ class _GameScreenState extends State<GameScreen> {
           GameWidget<FingerJumpGame>(game: _game),
           HudWidget(scoreNotifier: _game.scoreNotifier),
 
-          // ── Kamera önizleme (sağ alt, yuvarlak köşe) ──
+          // ── Kamera önizleme (sağ alt) ──
           if (camReady)
             Positioned(
               bottom: 32,
               right: 16,
               child: Column(
                 children: [
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(12),
-                    child: SizedBox(
-                      width: 90,
-                      height: 120,
-                      child: CameraPreview(camCtrl),
+                  ValueListenableBuilder<double?>(
+                    valueListenable: _camera!.fingerXNotifier,
+                    builder: (_, fingerX, __) =>
+                        ValueListenableBuilder<double?>(
+                      valueListenable: _camera!.fingerYNotifier,
+                      builder: (_, fingerY, __) => Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: fingerX != null
+                                ? Colors.red
+                                : Colors.white24,
+                            width: 2,
+                          ),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
+                          child: Stack(
+                            children: [
+                              SizedBox(
+                                width: 110,
+                                height: 150,
+                                child: CameraPreview(camCtrl!),
+                              ),
+                              SizedBox(
+                                width: 110,
+                                height: 150,
+                                child: CustomPaint(
+                                  painter: _FingerOverlayPainter(
+                                    fingerX: fingerX,
+                                    fingerY: fingerY,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(height: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withAlpha(140),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Text(
-                      '📷 Parmak',
-                      style: TextStyle(color: Colors.white70, fontSize: 10),
+                  ValueListenableBuilder<double?>(
+                    valueListenable: _camera!.fingerXNotifier,
+                    builder: (_, fingerX, __) => Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: fingerX != null
+                            ? Colors.red.withAlpha(200)
+                            : Colors.black.withAlpha(140),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        fingerX != null ? '🖐 ALGILANDI' : '✋ Bekleniyor...',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 10),
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
+
+          // ── Game Over ekranı ──
+          if (_isGameOver)
+            _GameOverOverlay(
+              score: _finalScore,
+              highScore: _highScore,
+              onRestart: _restart,
+              onMenu: () => Navigator.of(context)
+                  .popUntil((r) => r.isFirst),
+            ),
         ],
       ),
     );
   }
+}
+
+// ─── GAME OVER EKRANI ───────────────────────────────────────────────────────────────
+
+class _GameOverOverlay extends StatefulWidget {
+  final int score;
+  final int highScore;
+  final VoidCallback onRestart;
+  final VoidCallback onMenu;
+  const _GameOverOverlay({
+    required this.score,
+    required this.highScore,
+    required this.onRestart,
+    required this.onMenu,
+  });
+  @override
+  State<_GameOverOverlay> createState() => _GameOverOverlayState();
+}
+
+class _GameOverOverlayState extends State<_GameOverOverlay>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _fade;
+  late Animation<double> _slide;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _fade  = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
+    _slide = Tween<double>(begin: 60, end: 0)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutCubic));
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isNew = widget.score > 0 && widget.score >= widget.highScore;
+    return AnimatedBuilder(
+      animation: _ctrl,
+      builder: (_, child) => Opacity(
+        opacity: _fade.value,
+        child: Transform.translate(
+          offset: Offset(0, _slide.value),
+          child: child,
+        ),
+      ),
+      child: Container(
+        color: Colors.black.withAlpha(200),
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 32),
+            padding: const EdgeInsets.all(32),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(28),
+              gradient: const LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [Color(0xFF1A1F4E), Color(0xFF0A0E2A)],
+              ),
+              border: Border.all(color: const Color(0xFF7C4DFF).withAlpha(120), width: 1.5),
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF7C4DFF).withAlpha(60),
+                  blurRadius: 40,
+                  spreadRadius: 4,
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Başlık
+                ShaderMask(
+                  shaderCallback: (r) => const LinearGradient(
+                    colors: [Color(0xFFFF5252), Color(0xFFFF9800)],
+                  ).createShader(r),
+                  child: const Text(
+                    'GAME OVER',
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 6,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 28),
+
+                // Skor kutusu
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withAlpha(10),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        '${widget.score} m',
+                        style: const TextStyle(
+                          fontSize: 48,
+                          fontWeight: FontWeight.w900,
+                          color: Color(0xFF00E5FF),
+                          letterSpacing: 2,
+                        ),
+                      ),
+                      const Text(
+                        'skor',
+                        style: TextStyle(color: Colors.white54, fontSize: 13, letterSpacing: 4),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 12),
+
+                // Yüksek skor
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      isNew ? Icons.emoji_events : Icons.leaderboard,
+                      color: isNew ? Colors.amber : Colors.white38,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      isNew
+                          ? 'YENİ REKOR! 🎉'
+                          : 'En iyi: ${widget.highScore} m',
+                      style: TextStyle(
+                        color: isNew ? Colors.amber : Colors.white54,
+                        fontSize: 14,
+                        fontWeight: isNew ? FontWeight.bold : FontWeight.normal,
+                        letterSpacing: 1,
+                      ),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 32),
+
+                // Tekrar oyna
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: widget.onRestart,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF7C4DFF),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      elevation: 8,
+                      shadowColor: const Color(0xFF7C4DFF).withAlpha(120),
+                    ),
+                    child: const Text(
+                      'TEKRAR OYNA',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, letterSpacing: 3),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Ana menü
+                TextButton(
+                  onPressed: widget.onMenu,
+                  child: const Text(
+                    'Ana Menü',
+                    style: TextStyle(color: Colors.white54, fontSize: 14, letterSpacing: 2),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── PARMAK TESPİTİ OVERLAY ──────────────────────────────────────────────────
+
+/// Kamera önizlemesi üzerinde parmak konumunu gösteren painter.
+/// [fingerX] ve [fingerY] null ise "algulama yok" göstergesi çizer.
+class _FingerOverlayPainter extends CustomPainter {
+  final double? fingerX;
+  final double? fingerY;
+  const _FingerOverlayPainter({this.fingerX, this.fingerY});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (fingerX == null) {
+      // Algılama yok: orta kısmına soluñuk gösterge
+      canvas.drawRect(
+        Rect.fromLTWH(0, 0, size.width, size.height),
+        Paint()..color = Colors.red.withAlpha(20),
+      );
+      final textPainter = TextPainter(
+        text: const TextSpan(
+          text: '\u270b\nbekleniyor',
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.white54,
+            height: 1.4,
+          ),
+        ),
+        textAlign: TextAlign.center,
+        textDirection: TextDirection.ltr,
+      )..layout();
+      textPainter.paint(
+        canvas,
+        Offset(size.width / 2 - textPainter.width / 2, size.height / 2 - textPainter.height / 2),
+      );
+      return;
+    }
+
+    // Ön kamera ayna düşeltmesi: X ters
+    final x = (1.0 - fingerX!) * size.width;
+    final y = fingerY != null ? fingerY! * size.height : size.height * 0.5;
+
+    // Dikey kılavuz çizgisi
+    canvas.drawLine(
+      Offset(x, 0),
+      Offset(x, size.height),
+      Paint()
+        ..color = Colors.red.withAlpha(180)
+        ..strokeWidth = 2.0,
+    );
+
+    // Yatay kısa çizgi (crosshair)
+    canvas.drawLine(
+      Offset((x - 20).clamp(0.0, size.width), y),
+      Offset((x + 20).clamp(0.0, size.width), y),
+      Paint()
+        ..color = Colors.red.withAlpha(180)
+        ..strokeWidth = 2.0,
+    );
+
+    // Dış halka
+    canvas.drawCircle(
+      Offset(x, y),
+      16,
+      Paint()
+        ..color = Colors.red
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.5,
+    );
+
+    // İç dolu kırmızı daire
+    canvas.drawCircle(
+      Offset(x, y),
+      7,
+      Paint()..color = Colors.red,
+    );
+
+    // Sol üste kırmızı rozet
+    const badgeText = '✓';
+    final badge = TextPainter(
+      text: const TextSpan(
+        text: badgeText,
+        style: TextStyle(
+            fontSize: 10, color: Colors.white, fontWeight: FontWeight.bold),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(
+        Rect.fromLTWH(2, 2, badge.width + 6, badge.height + 2),
+        const Radius.circular(4),
+      ),
+      Paint()..color = Colors.red.withAlpha(230),
+    );
+    badge.paint(canvas, const Offset(5, 3));
+  }
+
+  @override
+  bool shouldRepaint(_FingerOverlayPainter old) =>
+      old.fingerX != fingerX || old.fingerY != fingerY;
 }

@@ -59,6 +59,21 @@ class FingerJumpGame extends FlameGame
   /// Boss aktif mi? Aktifken kamera kilitlenir, yeni platform üretilmez.
   bool _bossActive = false;
 
+  // ─── Game Over ───────────────────────────────────────────────────────────────
+
+  bool isGameOver = false;
+
+  /// Flutter katmanı bu callback'i dinler ve game over ekranını gösterir.
+  VoidCallback? onGameOver;
+
+  /// Oyunu durdurur ve Flutter'a bildirir.
+  void triggerGameOver() {
+    if (isGameOver) return;
+    isGameOver = true;
+    pauseEngine();
+    onGameOver?.call();
+  }
+
   // ─── Runtime referanslar ─────────────────────────────────────────────────────
 
   late PlayerComponent _player;
@@ -97,14 +112,43 @@ class FingerJumpGame extends FlameGame
   @override
   void update(double dt) {
     super.update(dt);
+    if (isGameOver) return;
 
     _updateScore();
+    _checkFallGameOver();
+    // Kamera ve platform üretimi boss aktifken de devam eder —
+    // oyuncu doğal akışla boss'a ulaşır, ışınlanma olmaz.
+    _scrollCamera(dt);
+    _spawnMorePlatforms();
+    _despawnOldPlatforms();
 
-    if (!_bossActive) {
-      _scrollCamera(dt);
-      _spawnMorePlatforms();
-      _despawnOldPlatforms();
+    if (_bossActive) {
+      _checkBossCollision();
+    } else {
       _checkBossSpawn();
+    }
+  }
+
+  // ─── Game Over kontrolleri ───────────────────────────────────────────────────
+
+  /// Oyuncu kameranın alt sınırının 10% altına düşerse → game over.
+  void _checkFallGameOver() {
+    if (_player.position.y > _cameraTopY + size.y * 1.10) {
+      triggerGameOver();
+    }
+  }
+
+  /// Boss ile fiziksel temas → game over.
+  void _checkBossCollision() {
+    final bossList = world.children.whereType<BossComponent>().toList();
+    if (bossList.isEmpty) return;
+    final boss = bossList.first;
+    final halfW = (boss.size.x + 32) / 2;
+    final halfH = (boss.size.y + 44) / 2;
+    final dx = (_player.position.x - boss.position.x).abs();
+    final dy = (_player.position.y - boss.position.y).abs();
+    if (dx < halfW && dy < halfH) {
+      triggerGameOver();
     }
   }
 
@@ -150,29 +194,18 @@ class FingerJumpGame extends FlameGame
     }
   }
 
-  /// Boss arenasını hazırlar ve boss'u dünyaya ekler.
+  /// Boss üretir. Normal oyun akışı bozulmaz:
+  /// arena platformu yoktur, kamera kilitlenmez.
+  /// Boss oyuncunun 1.4 ekran yüksekliği üstde spawn edilir;
+  /// oyuncu normal ziplama ile ulaşır.
   void _spawnBoss() {
     _bossActive = true;
-
-    // Oyuncu nerede? Buradan YUKARIYA doğru arena kur.
-    // _cameraTopY yerine player pozisyonunu baz alıyoruz —
-    // böylece kamera kilitlenme anı fark etmez.
-    final arenaTop = _player.position.y - size.y * 0.55;
-
-    // Arena: 3 platform oyuncunun üstüne ekle.
-    final platformRelYs = [0.0, size.y * 0.18, size.y * 0.36];
-    final platformXs = [size.x * 0.22, size.x * 0.62, size.x * 0.40];
-    for (var i = 0; i < platformRelYs.length; i++) {
-      world.add(PlatformComponent(
-        position: Vector2(platformXs[i], arenaTop + platformRelYs[i]),
-        width: 110,
-        type: PlatformType.normal,
-      ));
-    }
-
-    // Boss — arenasının en üstüne (oyuncunun 55% üstü).
+    // Boss, kameranın üst kenarından biraz yukarıda (ya da daha da yakında) spawn edilir.
+    // 0.55 × ekran yüksekliği — kamera zaten oyuncuyu üst %40'ta tuttuğu için
+    // boss hemen görünür bölgeye girer; oyuncu normal zıplamayla ulaşır.
+    final bossY = _cameraTopY + size.y * 0.15;
     world.add(BossComponent(
-      position: Vector2(size.x / 2, arenaTop - size.y * 0.1),
+      position: Vector2(size.x / 2, bossY),
       level: _bossLevel,
     ));
   }
