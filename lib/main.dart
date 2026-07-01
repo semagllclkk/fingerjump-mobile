@@ -457,9 +457,12 @@ class _GameScreenState extends State<GameScreen> {
     _game.inputController.onPunch = _game.fireFromPunch;
   }
 
-  void _restart() {
+  Future<void> _restart() async {
     _gyro?.stop();
-    _camera?.stop();
+    // Kamera modunda: native kanalı tamamen kapat, sonra navigate et.
+    // Böylece yeni GameScreen'in startTracking'i eski oturumun üstüne binmez.
+    await _camera?.stop();
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute(builder: (_) => GameScreen(mode: widget.mode)),
     );
@@ -468,7 +471,7 @@ class _GameScreenState extends State<GameScreen> {
   @override
   void dispose() {
     _gyro?.stop();
-    _camera?.stop();
+    _camera?.stop(); // async ama dispose'da await yapamıyoruz; _isStopped flag hemen set eder
     super.dispose();
   }
 

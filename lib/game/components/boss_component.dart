@@ -43,15 +43,27 @@ class BossComponent extends PositionComponent
   int get _maxHp => level;
   double get _speed => 60.0 + level * 25.0; // px/s
 
+  // ─── Smooth giriş ────────────────────────────────────────────────────────────
+
+  /// Boss'un hedefe ulaşacağı Y pozisyonu (dünya koordinatı).
+  late double _targetY;
+
+  /// Giriş animasyonu hızı: boss saniyede bu kadar piksel kayar.
+  static const double _entrySpeed = 400.0;
+
+  /// Boss hedef konumuna ulaştı mı?
+  bool _arrived = false;
+
   // ─── Constructor ─────────────────────────────────────────────────────────────
 
   BossComponent({required Vector2 position, required this.level})
       : super(
-          position: position,
+          position: Vector2(position.x, position.y - 300), // ekranın üstünden başla
           size: Vector2(50.0 + level * 10.0, 40.0 + level * 5.0),
           anchor: Anchor.center,
         ) {
     _hp = _maxHp;
+    _targetY = position.y; // gerçek hedef pozisyon
   }
 
   // ─── Yükleme ─────────────────────────────────────────────────────────────────
@@ -88,6 +100,18 @@ class BossComponent extends PositionComponent
   @override
   void update(double dt) {
     super.update(dt);
+
+    // Smooth giriş: hedef Y'ye kadar aşağı kayma.
+    if (!_arrived) {
+      final diff = _targetY - position.y;
+      if (diff.abs() <= _entrySpeed * dt) {
+        position.y = _targetY;
+        _arrived = true;
+      } else {
+        position.y += _entrySpeed * dt;
+      }
+      return; // Giriş animasyonu bitene kadar yatay hareket etme.
+    }
 
     // Sol/sağ salınım.
     position.x += _dirX * _speed * dt;

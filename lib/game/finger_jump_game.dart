@@ -216,15 +216,9 @@ class FingerJumpGame extends FlameGame
   // ─── Kamera ─────────────────────────────────────────────────────────────────
 
   void _scrollCamera(double dt) {
-    // Boss arena modu: kamera tamamen kilitlenir.
-    // Oyuncu ekran içinde kalır, boss'u geçemez, yukarı kaçamaz.
-    if (_bossActive) {
-      _applyCameraPosition();
-      return;
-    }
-
-    // Normal oyun: YALNIZCA yukarı takip.
-    // Aşağı drift KALDIRILDI — düşen oyuncu kameradan kayar → game over.
+    // Her modda (boss dahil) oyuncuyu yukarı takip et.
+    // Boss arena modunda platform üretimi duruyor ama kamera kilitlenmiyor.
+    // Oyuncu boss sırasında zıplayabilir, kamera ona eşlik eder.
     final desiredTop = _player.position.y - size.y * 0.4;
     if (desiredTop < _cameraTopY) {
       _cameraTopY = desiredTop;
