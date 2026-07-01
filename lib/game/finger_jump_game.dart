@@ -56,8 +56,17 @@ class FingerJumpGame extends FlameGame
   /// Kaçıncı boss — zorluk seviyesi buradan hesaplanır.
   int _bossLevel = 1;
 
-  /// Boss aktif mi? Aktifken kamera kilitlenir, yeni platform üretilmez.
+  /// Boss aktif mi? Aktifken yeni platform üretilmez.
   bool _bossActive = false;
+
+  /// Aktif boss referansı — her frame whereType aramaktan kaçınmak için.
+  BossComponent? _activeBoss;
+
+  // ─── Performans: despawn throttle ──────────────────────────────────────────
+  // Platform temizleme her frame yapılmak zorunda değil.
+  // 30 frame'de bir yeterli (~2x saniye).
+  int _despawnCounter = 0;
+  static const int _despawnEveryFrames = 30;
 
   // ─── Game Over ───────────────────────────────────────────────────────────────
 
@@ -118,10 +127,17 @@ class FingerJumpGame extends FlameGame
     _checkFallGameOver();
     _scrollCamera(dt);
     _spawnMorePlatforms();
-    _despawnOldPlatforms();
+
+    // Platform temizleme her 30 frame'de bir — her frame O(n) taramadan kaçın.
+    _despawnCounter++;
+    if (_despawnCounter >= _despawnEveryFrames) {
+      _despawnCounter = 0;
+      _despawnOldPlatforms();
+    }
 
     if (_bossActive) {
       _checkBossCollision();
+      _checkBossBypass();  // Oyuncu boss'u atlattıysa otomatik tamamla.
     } else {
       _checkBossSpawn();
     }
@@ -130,7 +146,6 @@ class FingerJumpGame extends FlameGame
   // ─── Game Over kontrolleri ───────────────────────────────────────────────────
 
   /// Oyuncu kamera alt sınırının %5 altına düşerse → game over.
-  /// Kamera artık aşağı drift etmediği için bu check gerçekten tetiklenir.
   void _checkFallGameOver() {
     if (_player.position.y > _cameraTopY + size.y * 1.05) {
       triggerGameOver();
@@ -138,10 +153,10 @@ class FingerJumpGame extends FlameGame
   }
 
   /// Boss ile fiziksel temas → game over.
+  /// Cached referans kullanır — her frame whereType çağrısı yok.
   void _checkBossCollision() {
-    final bossList = world.children.whereType<BossComponent>().toList();
-    if (bossList.isEmpty) return;
-    final boss = bossList.first;
+    final boss = _activeBoss;
+    if (boss == null || !boss.isMounted) return;
     final halfW = (boss.size.x + 32) / 2;
     final halfH = (boss.size.y + 44) / 2;
     final dx = (_player.position.x - boss.position.x).abs();
@@ -151,10 +166,22 @@ class FingerJumpGame extends FlameGame
     }
   }
 
+  /// Oyuncu boost platformuyla boss'u atlattıysa arena'yı tamamla.
+  /// Boss Y konumunun 120px üstüne geçen oyuncu bypass yapmış sayılır.
+  void _checkBossBypass() {
+    final boss = _activeBoss;
+    if (boss == null || !boss.isMounted) return;
+    if (_player.position.y < boss.position.y - 120) {
+      // Oyuncu boss'u aştı — sanki yenilmiş gibi işaretle.
+      boss.removeFromParent();
+      _activeBoss = null;
+      onBossDefeated();
+    }
+  }
+
   // ─── Dokunma — ateş etme ─────────────────────────────────────────────────────
 
   /// Gyro modunda ekrana dokunma = ateş.
-  /// Kamera modunda yumruk = ateş (CameraHandService → inputController.onPunch → burada).
   @override
   void onTapDown(TapDownEvent event) {
     if (!_bossActive) return;
@@ -162,7 +189,6 @@ class FingerJumpGame extends FlameGame
   }
 
   /// InputController.onPunch callback'i bu metoda bağlanır.
-  /// Gyro veya kamera modundan bağımsız çalışır.
   void fireFromPunch() {
     if (!_bossActive) return;
     _fireProjectile();
@@ -186,39 +212,56 @@ class FingerJumpGame extends FlameGame
 
   // ─── Boss sistemi ────────────────────────────────────────────────────────────
 
-  /// Her frame'de skor eşiğine ulaşılıp ulaşılmadığını kontrol eder.
   void _checkBossSpawn() {
     if (scoreNotifier.value >= _nextBossAt) {
       _spawnBoss();
     }
   }
 
-  /// Boss üretir ve arena moduna geçer:
-  ///   • Kamera kilitlenir — oyuncu dışarı çıkamaz.
-  ///   • Platform üretimi durur — boss'u zıplayarak geçemezsin.
-  ///   • Boss ekranın üst %25'inde çıkar; oyuncu zıplayarak ulaşır.
+  /// Boss üretir ve arena moduna geçer.
+  /// Boss ekranın üst %25'inde çıkar; oyuncu zıplayarak ulaşır.
+  /// Arena'daki mevcut boost platformları kaldırılır — bypass engeli.
   void _spawnBoss() {
     _bossActive = true;
+
+    // Mevcut boost platformları kaldır: boost ile boss'u atlamayı önle.
+    final boostPlatforms = world.children
+        .whereType<PlatformComponent>()
+        .where((p) => p.type == PlatformType.boost)
+        .toList();
+    for (final p in boostPlatforms) {
+      p.removeFromParent();
+    }
+
     final bossY = _cameraTopY + size.y * 0.25;
-    world.add(BossComponent(
+    final boss = BossComponent(
       position: Vector2(size.x / 2, bossY),
       level: _bossLevel,
-    ));
+    );
+    _activeBoss = boss;
+    world.add(boss);
   }
 
-  /// Boss yenildiğinde çağrılır (BossComponent tarafından).
+  /// Boss yenildiğinde (veya bypass edildiğinde) çağrılır.
   void onBossDefeated() {
     _bossActive = false;
+    _activeBoss = null;
     _bossLevel++;
     _nextBossAt += _bossEveryMeters;
+
+    // Boss arena boyunca platform üretilmedi — şimdi boşluğu doldur.
+    // _highestPlatformY'yi mevcut kamera konumuna göre güncelle.
+    if (_highestPlatformY > _cameraTopY + size.y * 0.5) {
+      _highestPlatformY = _cameraTopY + size.y * 0.5;
+    }
+    _spawnPlatformsUpTo(_cameraTopY - size.y * _spawnLookahead);
   }
 
   // ─── Kamera ─────────────────────────────────────────────────────────────────
 
   void _scrollCamera(double dt) {
     // Her modda (boss dahil) oyuncuyu yukarı takip et.
-    // Boss arena modunda platform üretimi duruyor ama kamera kilitlenmiyor.
-    // Oyuncu boss sırasında zıplayabilir, kamera ona eşlik eder.
+    // Kamera yalnızca yukarı gider — aşağı drift yok.
     final desiredTop = _player.position.y - size.y * 0.4;
     if (desiredTop < _cameraTopY) {
       _cameraTopY = desiredTop;
@@ -234,7 +277,7 @@ class FingerJumpGame extends FlameGame
   // ─── Platform üretimi ────────────────────────────────────────────────────────
 
   void _spawnMorePlatforms() {
-    // Boss aktifken yeni platform üretme — oyuncu boss arenasından kaçamaz.
+    // Boss aktifken yeni platform üretme.
     if (_bossActive) return;
     _spawnPlatformsUpTo(_cameraTopY - size.y * _spawnLookahead);
   }
@@ -274,6 +317,8 @@ class FingerJumpGame extends FlameGame
         .whereType<PlatformComponent>()
         .where((p) => p.position.y > limit)
         .toList();
-    for (final p in toRemove) { p.removeFromParent(); }
+    for (final p in toRemove) {
+      p.removeFromParent();
+    }
   }
 }

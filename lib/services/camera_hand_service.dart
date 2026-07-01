@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:pixel_game/game/systems/input_controller.dart';
-import 'package:flutter/scheduler.dart';
+
 
 /// Ön kamera + MediaPipe Hand Landmark tespiti.
 ///
@@ -32,11 +32,6 @@ class CameraHandService {
   // Servis durduruldu mu? Frame göndermeyi durdur.
   bool _isStopped = false;
 
-  // Frame throttle: son gönderilen frame zamanı.
-  // ~15 FPS → 66ms aralık yeterli, MediaPipe'ı bunaltmaz.
-  int _lastFrameMs = 0;
-  static const int _frameIntervalMs = 66; // ~15 FPS
-
   // Yumruk debounce — aynı vuruşu birden tetiklememek için.
   bool _handWasOpen = true;
   DateTime _lastPunch = DateTime(0);
@@ -57,7 +52,6 @@ class CameraHandService {
 
   Future<bool> start() async {
     _isStopped = false;
-    _lastFrameMs = 0;
 
     // Kamera izni iste.
     final status = await Permission.camera.request();
@@ -130,11 +124,6 @@ class CameraHandService {
   void _sendFrame(CameraImage image) {
     if (_isStopped) return;
     if (image.planes.length < 3) return;
-
-    // Throttle: ~15 FPS — MediaPipe yoğunluğunu azaltır, oyun kasmasını önler.
-    final nowMs = SchedulerBinding.instance.currentFrameTimeStamp.inMilliseconds;
-    if (nowMs - _lastFrameMs < _frameIntervalMs) return;
-    _lastFrameMs = nowMs;
 
     // YUV420: planes[0]=Y, planes[1]=U, planes[2]=V
     // Kotlin tarafı NV21 formatına çevirir → YuvImage → Bitmap → MediaPipe
