@@ -4,21 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:pixel_game/game/finger_jump_game.dart';
 
 /// Boss — her 15 metrede bir belirir, her seferinde biraz daha güçlü.
-///
-/// Zorluk artışı:
-///   • Level N → N can puanı, ekrana sığacak şekilde daha büyük, daha hızlı.
-///   • Level 1: 1 HP, 85px/s  — başlangıç
-///   • Level 2: 2 HP, 110px/s
-///   • Level 3: 3 HP, 135px/s
-///   … ve devam eder.
-///
-/// Etkileşimler:
-///   • [ProjectileComponent] çarparsa [takeDamage()] çağrılır.
-///   • HP 0'a düşünce [FingerJumpGame.onBossDefeated()] tetiklenir.
-///
-/// Tasarım notu:
-///   Boss kendi X sınırlarını hesaplarken [game.size.x] kullanır.
-///   Bu şekilde ekran boyutundan bağımsız çalışır.
+/// Yalnızca X ekseninde hareket eder (sol/sağ salınım).
+/// Y pozisyonu sabittir — ışınlanma ya da dikey hareket yoktur.
 class BossComponent extends PositionComponent
     with HasGameReference<FingerJumpGame>, CollisionCallbacks {
   // ─── Sabitler ───────────────────────────────────────────────────────────────
@@ -43,27 +30,15 @@ class BossComponent extends PositionComponent
   int get _maxHp => level;
   double get _speed => 60.0 + level * 25.0; // px/s
 
-  // ─── Smooth giriş ────────────────────────────────────────────────────────────
-
-  /// Boss'un hedefe ulaşacağı Y pozisyonu (dünya koordinatı).
-  late double _targetY;
-
-  /// Giriş animasyonu hızı: boss saniyede bu kadar piksel kayar.
-  static const double _entrySpeed = 400.0;
-
-  /// Boss hedef konumuna ulaştı mı?
-  bool _arrived = false;
-
   // ─── Constructor ─────────────────────────────────────────────────────────────
 
   BossComponent({required Vector2 position, required this.level})
       : super(
-          position: Vector2(position.x, position.y - 300), // ekranın üstünden başla
+          position: position, // Sabit Y — dikey hareket yok
           size: Vector2(50.0 + level * 10.0, 40.0 + level * 5.0),
           anchor: Anchor.center,
         ) {
     _hp = _maxHp;
-    _targetY = position.y; // gerçek hedef pozisyon
   }
 
   // ─── Yükleme ─────────────────────────────────────────────────────────────────
@@ -101,22 +76,9 @@ class BossComponent extends PositionComponent
   void update(double dt) {
     super.update(dt);
 
-    // Smooth giriş: hedef Y'ye kadar aşağı kayma.
-    if (!_arrived) {
-      final diff = _targetY - position.y;
-      if (diff.abs() <= _entrySpeed * dt) {
-        position.y = _targetY;
-        _arrived = true;
-      } else {
-        position.y += _entrySpeed * dt;
-      }
-      return; // Giriş animasyonu bitene kadar yatay hareket etme.
-    }
-
-    // Sol/sağ salınım.
+    // Yalnızca X ekseninde sol/sağ salınım — Y sabittir.
     position.x += _dirX * _speed * dt;
 
-    // Ekran kenar sınırları.
     final halfW = size.x / 2;
     final screenW = game.size.x;
     if (position.x >= screenW - halfW) {

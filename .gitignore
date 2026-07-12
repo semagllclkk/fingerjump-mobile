@@ -3,7 +3,7 @@
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
-pubspec.lock
+# pubspec.lock — Flutter uygulamalarında commit edilmeli (reproducible builds)
 
 # Build çıktıları
 build/
@@ -34,6 +34,7 @@ macos/Pods/
 
 # ─── Büyük model dosyaları (indirilerek eklenir, repoya konmaz) ───────────────
 assets/models/hand_landmarker.task
+assests/models/hand_landmarker.task
 
 # ─── Geçici / işletim sistemi ────────────────────────────────────────────────
 *.DS_Store

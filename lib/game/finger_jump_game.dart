@@ -10,15 +10,6 @@ import 'package:pixel_game/game/components/projectile_component.dart';
 import 'package:pixel_game/game/systems/input_controller.dart';
 
 /// FingerJumpGame — Flame oyununun kök sınıfı.
-///
-/// Faz 1 : Boş dünya, arka plan.
-/// Faz 2 : Oyuncu, zıplama, yerçekimi.
-/// Faz 3 : Platform üretimi, kamera takibi.
-/// Faz 4+7: Skor, jiroskop.
-/// Faz 5+6: Platform türleri, boss sistemi, mermi, dokunma.
-///
-/// [TapCallbacks] — dokunma algılama. Herhangi bir yere dokunmak
-/// oyuncunun pozisyonundan yukarı bir mermi fırlatır.
 class FingerJumpGame extends FlameGame
     with HasCollisionDetection, TapCallbacks {
   // ─── Görünüm ─────────────────────────────────────────────────────────────────
@@ -39,43 +30,37 @@ class FingerJumpGame extends FlameGame
 
   // ─── Platform üretimi sabitleri ──────────────────────────────────────────────
 
-  // Maksimum zıplama yüksekliği: v²/2g = 650²/1960 ≈ 215 px
-  // Güvenli aralık = %56 ≈ 120 px  (önceki 150 bazı anlarda ulaşılamıyordu)
-  static const double _platformSpacing = 120.0;
-  static const double _spawnLookahead = 2.0;
+  // Normal zıplama: v²/2g = 650²/1960 ≈ 215 px
+  // Spacing = 100px → max jump'ın %46'sı — güvenli marj
+  static const double _platformSpacing = 100.0;
+
+  // Lookahead: boost platformu ile 860px yüksekliğe çıkılabilir.
+  // size.y * 3.0 ≈ 2400px lookahead; boost sonrası boşluk olmaz.
+  static const double _spawnLookahead = 3.0;
   static const double _despawnDistance = 1.5;
+
+  // Boss spawn'a bu kadar platform kala boost üretme (5 platform = 500px)
+  static const double _boostFreeZoneBeforeBoss = 500.0;
 
   // ─── Boss sistemi ────────────────────────────────────────────────────────────
 
-  /// Kaç metrede bir boss çıksın.
   static const int _bossEveryMeters = 15;
-
-  /// Sonraki boss hangi metrede çıkacak.
   int _nextBossAt = _bossEveryMeters;
-
-  /// Kaçıncı boss — zorluk seviyesi buradan hesaplanır.
   int _bossLevel = 1;
-
-  /// Boss aktif mi? Aktifken yeni platform üretilmez.
   bool _bossActive = false;
 
   /// Aktif boss referansı — her frame whereType aramaktan kaçınmak için.
   BossComponent? _activeBoss;
 
   // ─── Performans: despawn throttle ──────────────────────────────────────────
-  // Platform temizleme her frame yapılmak zorunda değil.
-  // 30 frame'de bir yeterli (~2x saniye).
   int _despawnCounter = 0;
   static const int _despawnEveryFrames = 30;
 
   // ─── Game Over ───────────────────────────────────────────────────────────────
 
   bool isGameOver = false;
-
-  /// Flutter katmanı bu callback'i dinler ve game over ekranını gösterir.
   VoidCallback? onGameOver;
 
-  /// Oyunu durdurur ve Flutter'a bildirir.
   void triggerGameOver() {
     if (isGameOver) return;
     isGameOver = true;
@@ -120,15 +105,18 @@ class FingerJumpGame extends FlameGame
 
   @override
   void update(double dt) {
-    super.update(dt);
+    // dt clamp: kasma/takılma durumunda fizik patlamasını önle.
+    // 30 FPS altında bile fizik tutarlı kalır.
+    final safeDt = dt.clamp(0.0, 1 / 30.0);
+
+    super.update(safeDt);
     if (isGameOver) return;
 
     _updateScore();
     _checkFallGameOver();
-    _scrollCamera(dt);
+    _scrollCamera(safeDt);
     _spawnMorePlatforms();
 
-    // Platform temizleme her 30 frame'de bir — her frame O(n) taramadan kaçın.
     _despawnCounter++;
     if (_despawnCounter >= _despawnEveryFrames) {
       _despawnCounter = 0;
@@ -137,7 +125,7 @@ class FingerJumpGame extends FlameGame
 
     if (_bossActive) {
       _checkBossCollision();
-      _checkBossBypass();  // Oyuncu boss'u atlattıysa otomatik tamamla.
+      _checkBossBypass();
     } else {
       _checkBossSpawn();
     }
@@ -145,15 +133,12 @@ class FingerJumpGame extends FlameGame
 
   // ─── Game Over kontrolleri ───────────────────────────────────────────────────
 
-  /// Oyuncu kamera alt sınırının %5 altına düşerse → game over.
   void _checkFallGameOver() {
     if (_player.position.y > _cameraTopY + size.y * 1.05) {
       triggerGameOver();
     }
   }
 
-  /// Boss ile fiziksel temas → game over.
-  /// Cached referans kullanır — her frame whereType çağrısı yok.
   void _checkBossCollision() {
     final boss = _activeBoss;
     if (boss == null || !boss.isMounted) return;
@@ -167,12 +152,10 @@ class FingerJumpGame extends FlameGame
   }
 
   /// Oyuncu boost platformuyla boss'u atlattıysa arena'yı tamamla.
-  /// Boss Y konumunun 120px üstüne geçen oyuncu bypass yapmış sayılır.
   void _checkBossBypass() {
     final boss = _activeBoss;
     if (boss == null || !boss.isMounted) return;
     if (_player.position.y < boss.position.y - 120) {
-      // Oyuncu boss'u aştı — sanki yenilmiş gibi işaretle.
       boss.removeFromParent();
       _activeBoss = null;
       onBossDefeated();
@@ -181,14 +164,12 @@ class FingerJumpGame extends FlameGame
 
   // ─── Dokunma — ateş etme ─────────────────────────────────────────────────────
 
-  /// Gyro modunda ekrana dokunma = ateş.
   @override
   void onTapDown(TapDownEvent event) {
     if (!_bossActive) return;
     _fireProjectile();
   }
 
-  /// InputController.onPunch callback'i bu metoda bağlanır.
   void fireFromPunch() {
     if (!_bossActive) return;
     _fireProjectile();
@@ -218,13 +199,10 @@ class FingerJumpGame extends FlameGame
     }
   }
 
-  /// Boss üretir ve arena moduna geçer.
-  /// Boss ekranın üst %25'inde çıkar; oyuncu zıplayarak ulaşır.
-  /// Arena'daki mevcut boost platformları kaldırılır — bypass engeli.
   void _spawnBoss() {
     _bossActive = true;
 
-    // Mevcut boost platformları kaldır: boost ile boss'u atlamayı önle.
+    // Mevcut boost platformlarını kaldır — bypass engeli.
     final boostPlatforms = world.children
         .whereType<PlatformComponent>()
         .where((p) => p.type == PlatformType.boost)
@@ -233,7 +211,8 @@ class FingerJumpGame extends FlameGame
       p.removeFromParent();
     }
 
-    final bossY = _cameraTopY + size.y * 0.25;
+    // Boss ekranın üst %20'sinde, sabit Y — sadece X ekseninde hareket eder.
+    final bossY = _cameraTopY + size.y * 0.20;
     final boss = BossComponent(
       position: Vector2(size.x / 2, bossY),
       level: _bossLevel,
@@ -242,15 +221,13 @@ class FingerJumpGame extends FlameGame
     world.add(boss);
   }
 
-  /// Boss yenildiğinde (veya bypass edildiğinde) çağrılır.
   void onBossDefeated() {
     _bossActive = false;
     _activeBoss = null;
     _bossLevel++;
     _nextBossAt += _bossEveryMeters;
 
-    // Boss arena boyunca platform üretilmedi — şimdi boşluğu doldur.
-    // _highestPlatformY'yi mevcut kamera konumuna göre güncelle.
+    // Boss sırasında duraklamış platform üretimini başlat.
     if (_highestPlatformY > _cameraTopY + size.y * 0.5) {
       _highestPlatformY = _cameraTopY + size.y * 0.5;
     }
@@ -260,13 +237,10 @@ class FingerJumpGame extends FlameGame
   // ─── Kamera ─────────────────────────────────────────────────────────────────
 
   void _scrollCamera(double dt) {
-    // Her modda (boss dahil) oyuncuyu yukarı takip et.
-    // Kamera yalnızca yukarı gider — aşağı drift yok.
     final desiredTop = _player.position.y - size.y * 0.4;
     if (desiredTop < _cameraTopY) {
       _cameraTopY = desiredTop;
     }
-
     _applyCameraPosition();
   }
 
@@ -277,7 +251,6 @@ class FingerJumpGame extends FlameGame
   // ─── Platform üretimi ────────────────────────────────────────────────────────
 
   void _spawnMorePlatforms() {
-    // Boss aktifken yeni platform üretme.
     if (_bossActive) return;
     _spawnPlatformsUpTo(_cameraTopY - size.y * _spawnLookahead);
   }
@@ -290,22 +263,35 @@ class FingerJumpGame extends FlameGame
   }
 
   /// Platform türünü rastgele seçer.
-  /// Dağılım: %65 normal, %25 kırılgan, %10 güçlendirici.
-  PlatformType _randomType() {
+  /// Dağılım: %70 normal, %25 kırılgan, %5 güçlendirici.
+  /// Boss spawn yakınında (%boostFreeZoneBeforeBoss px) boost üretilmez.
+  PlatformType _randomType(double worldY) {
+    // Boss spawn eşiğine yakın platformlarda boost üretme.
+    final currentMeters = (_startY - worldY).clamp(0.0, double.infinity) / 100;
+    final metersToNextBoss = (_nextBossAt - currentMeters).toDouble();
+    if (metersToNextBoss >= 0 &&
+        metersToNextBoss * 100 < _boostFreeZoneBeforeBoss) {
+      // Boss yakınında → sadece normal veya kırılgan
+      return _rng.nextDouble() < 0.72 ? PlatformType.normal : PlatformType.fragile;
+    }
+
     final r = _rng.nextDouble();
-    if (r < 0.65) return PlatformType.normal;
-    if (r < 0.90) return PlatformType.fragile;
+    if (r < 0.70) return PlatformType.normal;
+    if (r < 0.95) return PlatformType.fragile;
     return PlatformType.boost;
   }
 
   void _spawnOnePlatform(double worldY) {
     final w = 70.0 + _rng.nextDouble() * 50.0;
     final margin = w / 2 + 8.0;
-    final x = margin + _rng.nextDouble() * (size.x - margin * 2);
+    final maxX = size.x - margin * 2;
+    // Negatif maxX olasılığını önle (çok geniş platform dar ekranda)
+    if (maxX <= 0) return;
+    final x = margin + _rng.nextDouble() * maxX;
     world.add(PlatformComponent(
       position: Vector2(x, worldY),
       width: w,
-      type: _randomType(),
+      type: _randomType(worldY),
     ));
   }
 

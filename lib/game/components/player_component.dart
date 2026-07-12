@@ -7,17 +7,13 @@ import 'package:pixel_game/game/systems/input_controller.dart';
 
 /// Oyuncuyu temsil eden component.
 ///
-/// Faz 2: Otomatik zıplama, yerçekimi, yatay sarmal.
-/// Faz 3: Çarpışma algılama.
-/// Faz 4+7: Jiroskop hareketi (InputController).
-/// Faz 5+6: Platform türlerine göre farklı tepkiler.
+/// Fizik: yerçekimi + zıplama + yatay hareket (InputController).
+/// Collision: Flame broad-phase + manuel alt-kenar sweep kontrolü.
 class PlayerComponent extends PositionComponent
     with HasGameReference<FingerJumpGame>, CollisionCallbacks {
   // ─── Fizik sabitleri ────────────────────────────────────────────────────────
 
   static const double gravity = 980.0;
-
-  /// Normal zıplama hızı.
   static const double jumpVelocity = -650.0;
 
   /// Güçlendirici platform çarpanı.
@@ -34,6 +30,9 @@ class PlayerComponent extends PositionComponent
   // ─── Runtime durum ──────────────────────────────────────────────────────────
 
   double _velocityY = 0.0;
+
+  /// Bir önceki frame'deki alt kenar Y (sweep collision için).
+  double _prevBottomY = 0.0;
 
   // ─── Bağımlılıklar ──────────────────────────────────────────────────────────
 
@@ -71,13 +70,69 @@ class PlayerComponent extends PositionComponent
   void update(double dt) {
     super.update(dt);
 
+    // Önceki alt kenar — sweep collision için.
+    _prevBottomY = position.y + playerHeight / 2;
+
     _velocityY += gravity * dt;
     position.y += _velocityY * dt;
     position.x += _inputController.normalizedX * maxSpeedX * dt;
     _wrapHorizontal();
+
+    // Manuel sweep: Flame collision'ın büyük dt'de kaçırdığı platformları yakala.
+    // Düşerken (_velocityY > 0) platformların üst kenarını geçip geçmediğimizi kontrol et.
+    if (_velocityY > 0) {
+      _sweepCheckPlatforms();
+    }
   }
 
-  // ─── Çarpışma ───────────────────────────────────────────────────────────────
+  // ─── Sweep collision ─────────────────────────────────────────────────────────
+
+  /// Flame'in broad-phase collision'ının büyük dt'de kaçırabileceği
+  /// platform çarpışmalarını manuel sweep ile yakalar.
+  ///
+  /// Yalnızca düşerken aktif — bu performanslı, yukarı giderken çalışmaz.
+  void _sweepCheckPlatforms() {
+    final currentBottomY = position.y + playerHeight / 2;
+    final playerLeft = position.x - playerWidth / 2;
+    final playerRight = position.x + playerWidth / 2;
+
+    for (final component in game.world.children) {
+      if (component is! PlatformComponent) continue;
+      if (component.isRemoving) continue;
+
+      final platformTopY = component.position.y - PlatformComponent.platformHeight / 2;
+      final platformLeft = component.position.x - component.size.x / 2;
+      final platformRight = component.position.x + component.size.x / 2;
+
+      // X ekseni örtüşüyor mu?
+      if (playerRight <= platformLeft || playerLeft >= platformRight) continue;
+
+      // Bu frame platformun üst kenarını geçtik mi? (sweep)
+      if (_prevBottomY <= platformTopY && currentBottomY >= platformTopY) {
+        _landOnPlatform(component);
+        break; // Bir frame'de tek platform çarpışması yeterli
+      }
+    }
+  }
+
+  void _landOnPlatform(PlatformComponent platform) {
+    // Oyuncuyu platform üstüne oturtur — içine gömülmeyi önler.
+    position.y = platform.position.y
+        - PlatformComponent.platformHeight / 2
+        - playerHeight / 2;
+
+    switch (platform.type) {
+      case PlatformType.normal:
+        jump();
+      case PlatformType.fragile:
+        jump();
+        platform.scheduleRemoval();
+      case PlatformType.boost:
+        jumpBoost();
+    }
+  }
+
+  // ─── Çarpışma (Flame broad-phase) ───────────────────────────────────────────
 
   @override
   void onCollisionStart(
@@ -85,38 +140,28 @@ class PlayerComponent extends PositionComponent
     PositionComponent other,
   ) {
     super.onCollisionStart(intersectionPoints, other);
-
-    // Yalnızca platform çarpışmalarına bak.
-    // Boss ve mermi çarpışmaları bu sınıfı ilgilendirmez.
     if (other is! PlatformComponent) return;
 
-    // Düşerken ve üstten çarparken zıpla.
+    // Düşmüyorsa zıplama.
     if (_velocityY <= 0) return;
-    if (position.y >= other.position.y) return;
 
-    switch (other.type) {
-      case PlatformType.normal:
-        jump();
+    // Oyuncunun alt merkezi platform merkezinin üstündeyse üstten çarpmış sayılır.
+    // (Anchor.center kullanıldığı için merkez koordinatı doğrudan kullanılabilir)
+    final playerBottom = position.y + playerHeight / 2;
+    final platformTop = other.position.y - PlatformComponent.platformHeight / 2;
 
-      case PlatformType.fragile:
-        // Normal zıpla, sonra platform kaybolur.
-        jump();
-        other.scheduleRemoval();
+    // Platformun üstünden mi geldi? Zaten sweep'te halledilmiş olabilir.
+    if (playerBottom > platformTop + PlatformComponent.platformHeight) return;
 
-      case PlatformType.boost:
-        // 3× yükseklik — oyuncu çok daha yükseğe fırlar.
-        jumpBoost();
-    }
+    _landOnPlatform(other);
   }
 
   // ─── Yardımcı metodlar ──────────────────────────────────────────────────────
 
-  /// Normal zıplama hız impulsı.
   void jump() {
     _velocityY = jumpVelocity;
   }
 
-  /// Güçlendirici zıplama — [boostMultiplier] katı yükseklik.
   void jumpBoost() {
     _velocityY = jumpVelocity * boostMultiplier;
   }

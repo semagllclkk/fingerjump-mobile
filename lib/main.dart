@@ -484,76 +484,26 @@ class _GameScreenState extends State<GameScreen> {
       backgroundColor: FingerJumpGame.skyTop,
       body: Stack(
         children: [
-          GameWidget<FingerJumpGame>(game: _game),
-          HudWidget(scoreNotifier: _game.scoreNotifier),
+          // RepaintBoundary: GameWidget kendi render döngüsünde çalışır.
+          // Flutter widget rebuild'larından izole edilmesi oyunu kasımadan çalıştırır.
+          RepaintBoundary(
+            child: GameWidget<FingerJumpGame>(game: _game),
+          ),
+
+          // HUD da izole — sadece skor değişince rebuild olur.
+          RepaintBoundary(
+            child: HudWidget(scoreNotifier: _game.scoreNotifier),
+          ),
 
           // ── Kamera önizleme (sağ alt) ──
+          // Ayrı widget olarak izole edildi: rebuild'lar sadece overlay'i etkiler,
+          // GameWidget/HUD'u etkilemez.
           if (camReady)
             Positioned(
               bottom: 32,
               right: 16,
-              child: Column(
-                children: [
-                  ValueListenableBuilder<double?>(
-                    valueListenable: _camera!.fingerXNotifier,
-                    builder: (_, fingerX, __) =>
-                        ValueListenableBuilder<double?>(
-                      valueListenable: _camera!.fingerYNotifier,
-                      builder: (_, fingerY, __) => Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: fingerX != null
-                                ? Colors.red
-                                : Colors.white24,
-                            width: 2,
-                          ),
-                        ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(10),
-                          child: Stack(
-                            children: [
-                              SizedBox(
-                                width: 110,
-                                height: 150,
-                                child: CameraPreview(camCtrl!),
-                              ),
-                              SizedBox(
-                                width: 110,
-                                height: 150,
-                                child: CustomPaint(
-                                  painter: _FingerOverlayPainter(
-                                    fingerX: fingerX,
-                                    fingerY: fingerY,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  ValueListenableBuilder<double?>(
-                    valueListenable: _camera!.fingerXNotifier,
-                    builder: (_, fingerX, __) => Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: fingerX != null
-                            ? Colors.red.withAlpha(200)
-                            : Colors.black.withAlpha(140),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(
-                        fingerX != null ? '🖐 ALGILANDI' : '✋ Bekleniyor...',
-                        style: const TextStyle(
-                            color: Colors.white, fontSize: 10),
-                      ),
-                    ),
-                  ),
-                ],
+              child: RepaintBoundary(
+                child: _CameraOverlay(camera: _camera!),
               ),
             ),
 
@@ -563,8 +513,7 @@ class _GameScreenState extends State<GameScreen> {
               score: _finalScore,
               highScore: _highScore,
               onRestart: _restart,
-              onMenu: () => Navigator.of(context)
-                  .popUntil((r) => r.isFirst),
+              onMenu: () => Navigator.of(context).popUntil((r) => r.isFirst),
             ),
         ],
       ),
@@ -572,7 +521,88 @@ class _GameScreenState extends State<GameScreen> {
   }
 }
 
+// ─── KAMERA OVERLAY ──────────────────────────────────────────────────────────
+
+/// Kamera önizleme + parmak overlay widget'ı.
+/// GameScreen'den bağımsız bir widget — rebuild'lar burada kalır, oyunu etkilemez.
+class _CameraOverlay extends StatelessWidget {
+  final CameraHandService camera;
+  const _CameraOverlay({required this.camera});
+
+  @override
+  Widget build(BuildContext context) {
+    final ctrl = camera.cameraController!;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Tek ListenableBuilder ile hem X hem Y notifier'ı dinle.
+        ListenableBuilder(
+          listenable: Listenable.merge([
+            camera.fingerXNotifier,
+            camera.fingerYNotifier,
+          ]),
+          builder: (context, _) {
+            final fingerX = camera.fingerXNotifier.value;
+            final fingerY = camera.fingerYNotifier.value;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: fingerX != null ? Colors.red : Colors.white24,
+                      width: 2,
+                    ),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Stack(
+                      children: [
+                        SizedBox(
+                          width: 110,
+                          height: 150,
+                          child: CameraPreview(ctrl),
+                        ),
+                        SizedBox(
+                          width: 110,
+                          height: 150,
+                          child: CustomPaint(
+                            painter: _FingerOverlayPainter(
+                              fingerX: fingerX,
+                              fingerY: fingerY,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: fingerX != null
+                        ? Colors.red.withAlpha(200)
+                        : Colors.black.withAlpha(140),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(
+                    fingerX != null ? '🖐 ALGILANDI' : '✋ Bekleniyor...',
+                    style: const TextStyle(color: Colors.white, fontSize: 10),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ],
+    );
+  }
+}
+
 // ─── GAME OVER EKRANI ───────────────────────────────────────────────────────────────
+
 
 class _GameOverOverlay extends StatefulWidget {
   final int score;
