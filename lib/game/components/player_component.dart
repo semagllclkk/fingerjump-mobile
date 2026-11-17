@@ -1,66 +1,72 @@
-import 'package:flame/collisions.dart';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
 import 'package:flame/components.dart';
-import 'package:flutter/material.dart';
+import 'package:pixel_game/game/accessories.dart';
+import 'package:pixel_game/game/cats.dart';
 import 'package:pixel_game/game/components/platform_component.dart';
 import 'package:pixel_game/game/finger_jump_game.dart';
 import 'package:pixel_game/game/systems/input_controller.dart';
 
-/// Oyuncuyu temsil eden component.
+/// Oyuncu — seçilen kedi.
 ///
-/// Fizik: yerçekimi + zıplama + yatay hareket (InputController).
-/// Collision: Flame broad-phase + manuel alt-kenar sweep kontrolü.
+/// Fizik: yerçekimi + otomatik zıplama + yatay hareket (InputController).
+/// Çarpışma: yalnızca düşerken, alt kenar sweep testi (Flame collision yok).
 class PlayerComponent extends PositionComponent
-    with HasGameReference<FingerJumpGame>, CollisionCallbacks {
+    with HasGameReference<FingerJumpGame> {
   // ─── Fizik sabitleri ────────────────────────────────────────────────────────
 
   static const double gravity = 980.0;
   static const double jumpVelocity = -650.0;
-
-  /// Güçlendirici platform çarpanı.
   static const double boostMultiplier = 2.0;
-
-  /// Tam ±1 girişte ulaşılan maksimum yatay hız (piksel/sn).
   static const double maxSpeedX = 300.0;
+
+  /// Yatay hızın hedefe yaklaşma katsayısı (1/sn). Kamera modundaki seyrek ve
+  /// titrek girişleri yumuşatır; jiroskopta da hissedilir bir gecikme yaratmaz.
+  static const double _steerResponse = 12.0;
 
   // ─── Boyut ──────────────────────────────────────────────────────────────────
 
-  static const double playerWidth = 44.0;
+  static const double playerWidth = 40.0;
   static const double playerHeight = 44.0;
+  static const double _spriteScale = 3.0;
+  static const double _spriteSize = CatSprites.size * _spriteScale; // 48
 
-  // ─── Runtime durum ──────────────────────────────────────────────────────────
+  // ─── Durum ──────────────────────────────────────────────────────────────────
 
   double _velocityY = 0.0;
-
-  /// Bir önceki frame'deki alt kenar Y (sweep collision için).
+  double _velocityX = 0.0;
   double _prevBottomY = 0.0;
+  bool _facingLeft = false;
 
-  // ─── Bağımlılıklar ──────────────────────────────────────────────────────────
+  double _squash = 0.0; // iniş ezilmesi (0..1)
+  double _blinkTimer = 2.5;
+  double _invulnerable = 0.0;
+  double _t = 0;
+
+  bool get isInvulnerable => _invulnerable > 0;
 
   final InputController _inputController;
-
-  // ─── Constructor ────────────────────────────────────────────────────────────
+  final CatInfo cat;
+  late final List<ui.Image> _frames;
+  final ui.Paint _paint = ui.Paint()
+    ..filterQuality = ui.FilterQuality.none
+    ..isAntiAlias = false;
 
   PlayerComponent({
     required Vector2 spawnPosition,
     required this._inputController,
+    required this.cat,
   }) : super(
-          position: spawnPosition,
-          size: Vector2(playerWidth, playerHeight),
-          anchor: Anchor.center,
-        );
-
-  // ─── Yükleme ────────────────────────────────────────────────────────────────
+         position: spawnPosition,
+         size: Vector2(playerWidth, playerHeight),
+         anchor: Anchor.center,
+       );
 
   @override
   Future<void> onLoad() async {
     await super.onLoad();
-
-    add(RectangleComponent(
-      size: size,
-      paint: Paint()..color = const Color(0xFF4FC3F7),
-    ));
-
-    add(RectangleHitbox());
+    _frames = CatSprites.framesFor(cat.breed);
     jump();
   }
 
@@ -68,58 +74,105 @@ class PlayerComponent extends PositionComponent
 
   @override
   void update(double dt) {
-    super.update(dt);
+    _t += dt;
+    if (_squash > 0) _squash = math.max(0, _squash - dt * 7);
+    if (_invulnerable > 0) _invulnerable -= dt;
+    _blinkTimer -= dt;
+    if (_blinkTimer < -0.12) _blinkTimer = 2 + (_t * 7919 % 3);
 
-    // Önceki alt kenar — sweep collision için.
     _prevBottomY = position.y + playerHeight / 2;
 
     _velocityY += gravity * dt;
     position.y += _velocityY * dt;
-    position.x += _inputController.normalizedX * maxSpeedX * dt;
+
+    final targetVx = _inputController.normalizedX * maxSpeedX * cat.speedMult;
+    _velocityX += (targetVx - _velocityX) * math.min(1.0, dt * _steerResponse);
+    position.x += _velocityX * dt;
+    if (_velocityX.abs() > 12) _facingLeft = _velocityX < 0;
     _wrapHorizontal();
 
-    // Manuel sweep: Flame collision'ın büyük dt'de kaçırdığı platformları yakala.
-    // Düşerken (_velocityY > 0) platformların üst kenarını geçip geçmediğimizi kontrol et.
-    if (_velocityY > 0) {
-      _sweepCheckPlatforms();
+    if (_velocityY > 0) _sweepCheckPlatforms();
+  }
+
+  @override
+  void render(ui.Canvas canvas) {
+    // Dokunulmazlık sırasında yanıp sönme.
+    if (_invulnerable > 0 && (_t * 12).floor().isEven) return;
+
+    final rising = _velocityY < 0;
+    var frame = rising ? 0 : 1;
+    if (_blinkTimer < 0 && rising) frame = 2;
+    if (_facingLeft) frame += 3;
+    final img = _frames[frame];
+
+    // Ezilme/uzama: inişte yassılaş, hızla yükselirken uza.
+    final stretch = rising ? math.min(0.12, -_velocityY / 650 * 0.08) : 0.0;
+    final sx = 1 + _squash * 0.22 - stretch * 0.5;
+    final sy = 1 - _squash * 0.22 + stretch;
+    final w = _spriteSize * sx;
+    final h = _spriteSize * sy;
+    // Ayaklar hitbox'ın altına otursun.
+    final left = (size.x - w) / 2;
+    final top = size.y - h + 2;
+
+    final dst = ui.Rect.fromLTWH(left, top, w, h);
+    canvas.drawImageRect(
+      img,
+      const ui.Rect.fromLTWH(
+        0,
+        0,
+        CatSprites.size * 1.0,
+        CatSprites.size * 1.0,
+      ),
+      dst,
+      _paint,
+    );
+
+    // Dükkândan takılan aksesuar (ezilme/uzamaya kafayla birlikte uyar).
+    final acc = game.accessory;
+    if (acc != null) {
+      // Pervane yükselirken hızlı, düşerken yavaş döner.
+      final spin = (_t * (rising ? 14 : 5)).floor();
+      AccessoryArt.draw(
+        canvas,
+        acc,
+        dst,
+        frame: spin,
+        flipX: _facingLeft,
+        paint: _paint,
+      );
     }
   }
 
   // ─── Sweep collision ─────────────────────────────────────────────────────────
 
-  /// Flame'in broad-phase collision'ının büyük dt'de kaçırabileceği
-  /// platform çarpışmalarını manuel sweep ile yakalar.
-  ///
-  /// Yalnızca düşerken aktif — bu performanslı, yukarı giderken çalışmaz.
   void _sweepCheckPlatforms() {
     final currentBottomY = position.y + playerHeight / 2;
     final playerLeft = position.x - playerWidth / 2;
     final playerRight = position.x + playerWidth / 2;
 
-    for (final component in game.world.children) {
-      if (component is! PlatformComponent) continue;
-      if (component.isRemoving) continue;
-
-      final platformTopY = component.position.y - PlatformComponent.platformHeight / 2;
-      final platformLeft = component.position.x - component.size.x / 2;
-      final platformRight = component.position.x + component.size.x / 2;
-
-      // X ekseni örtüşüyor mu?
-      if (playerRight <= platformLeft || playerLeft >= platformRight) continue;
-
-      // Bu frame platformun üst kenarını geçtik mi? (sweep)
-      if (_prevBottomY <= platformTopY && currentBottomY >= platformTopY) {
-        _landOnPlatform(component);
-        break; // Bir frame'de tek platform çarpışması yeterli
+    final platforms = game.platforms;
+    for (var i = 0; i < platforms.length; i++) {
+      final p = platforms[i];
+      if (p.isBreaking) continue;
+      final top = p.position.y - PlatformComponent.platformHeight / 2;
+      if (_prevBottomY > top || currentBottomY < top) continue;
+      final halfW = p.size.x / 2;
+      if (playerRight <= p.position.x - halfW ||
+          playerLeft >= p.position.x + halfW) {
+        continue;
       }
+      _landOnPlatform(p);
+      return;
     }
   }
 
   void _landOnPlatform(PlatformComponent platform) {
-    // Oyuncuyu platform üstüne oturtur — içine gömülmeyi önler.
-    position.y = platform.position.y
-        - PlatformComponent.platformHeight / 2
-        - playerHeight / 2;
+    position.y =
+        platform.position.y -
+        PlatformComponent.platformHeight / 2 -
+        playerHeight / 2;
+    _squash = 1.0;
 
     switch (platform.type) {
       case PlatformType.normal:
@@ -132,38 +185,19 @@ class PlayerComponent extends PositionComponent
     }
   }
 
-  // ─── Çarpışma (Flame broad-phase) ───────────────────────────────────────────
-
-  @override
-  void onCollisionStart(
-    Set<Vector2> intersectionPoints,
-    PositionComponent other,
-  ) {
-    super.onCollisionStart(intersectionPoints, other);
-    if (other is! PlatformComponent) return;
-
-    // Düşmüyorsa zıplama.
-    if (_velocityY <= 0) return;
-
-    // Oyuncunun alt merkezi platform merkezinin üstündeyse üstten çarpmış sayılır.
-    // (Anchor.center kullanıldığı için merkez koordinatı doğrudan kullanılabilir)
-    final playerBottom = position.y + playerHeight / 2;
-    final platformTop = other.position.y - PlatformComponent.platformHeight / 2;
-
-    // Platformun üstünden mi geldi? Zaten sweep'te halledilmiş olabilir.
-    if (playerBottom > platformTop + PlatformComponent.platformHeight) return;
-
-    _landOnPlatform(other);
-  }
-
   // ─── Yardımcı metodlar ──────────────────────────────────────────────────────
 
-  void jump() {
-    _velocityY = jumpVelocity;
-  }
+  void jump() => _velocityY = jumpVelocity * cat.jumpMult;
 
-  void jumpBoost() {
-    _velocityY = jumpVelocity * boostMultiplier;
+  void jumpBoost() =>
+      _velocityY = jumpVelocity * cat.jumpMult * boostMultiplier;
+
+  /// Ekstra can kullanıldığında: verilen noktaya ışınla, yukarı fırlat.
+  void revive(Vector2 at, {required bool boost}) {
+    position.setFrom(at);
+    _velocityX = 0;
+    _invulnerable = 2.0;
+    boost ? jumpBoost() : jump();
   }
 
   void _wrapHorizontal() {
