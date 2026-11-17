@@ -12,19 +12,35 @@ Oyuncu otomatik zıplar — senin işin **yatay hareketi** kontrol etmek:
 | **Kamera** | Ön kamera — parmak X pozisyonu oyuncuyu yönlendirir |
 | **Ateş** | Gyro: ekrana dokun · Kamera: yumruk yap |
 
+## Kediler
+
+Oyun başında 5 kediden biri seçilir; her birinin küçük bir yeteneği var:
+
+| Kedi | Yetenek |
+|---|---|
+| Sarman | Çevik Pati — %15 daha hızlı koşar |
+| Tekir | Mıknatıs Bıyık — yakındaki coin'leri çeker |
+| Kara | Dokuzuncu Can — bir kez düşüşten / boss'tan kurtulur |
+| Pamuk (Van) | Van Zıplayışı — %8 daha yükseğe zıplar |
+| Üç Renkli | Uğurlu Pati — her coin 2 sayılır |
+
 ## Platformlar
 
-| Renk | Tür | Davranış |
-|---|---|---|
-| 🟢 Yeşil | Normal | Sınırsız kullanım |
-| 🟠 Turuncu | Kırılgan | 1 zıplamadan sonra kaybolur |
-| 🟡 Altın | Boost | 2× yüksekliğe fırlatır |
+Portfolyodaki çiftlik sahnesinin beceri kartlarından esinlenen, sarmaşıklı çiçekli piksel kartlar:
+
+| Kart | Davranış |
+|---|---|
+| Pembe çiçekli | Normal — sınırsız kullanım |
+| Kuru sarmaşık, çatlak | Kırılgan — 1 zıplamadan sonra düşer |
+| Altın çiçekli | Boost — 2× yüksekliğe fırlatır |
+
+Kartların üstünde dönen piksel coin'ler var; toplam coin ve rekor kaydedilir.
 
 ## Boss Sistemi
 
-Her **15 metre**de bir boss çıkar. Boss yalnızca X ekseninde hareket eder.  
-Skor arttıkça boss daha büyük, daha hızlı ve daha fazla can puanına sahip olur.  
-Boss'u yenmek için ekrana dokun (veya yumruk yap) → mermi fırlat.
+Her **15 metre**de bir **Karga Reis** çıkar. Yalnızca X ekseninde hareket eder.
+Skor arttıkça daha büyük, hızlı ve dayanıklı olur.
+Ekrana dokun (veya yumruk yap) → yün yumağı fırlat.
 
 ## Teknoloji Stack'i
 
@@ -63,8 +79,10 @@ lib/
 │   ├── components/
 │   │   ├── player_component.dart    # Fizik, çarpışma (sweep collision)
 │   │   ├── platform_component.dart  # Normal / kırılgan / boost
-│   │   ├── boss_component.dart      # X-eksen hareketi, HP bar
-│   │   └── projectile_component.dart
+│   │   ├── boss_component.dart      # Karga Reis, X-eksen hareketi, HP bar
+│   │   ├── coin_component.dart      # Dönen piksel coin
+│   │   ├── sky_backdrop.dart        # Yükseldikçe değişen gökyüzü, bulutlar, zemin
+│   │   └── projectile_component.dart # Yün yumağı
 │   └── systems/
 │       └── input_controller.dart
 └── services/

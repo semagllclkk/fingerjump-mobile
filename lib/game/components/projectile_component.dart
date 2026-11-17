@@ -1,75 +1,71 @@
-import 'package:flame/collisions.dart';
+import 'dart:ui' as ui;
+
 import 'package:flame/components.dart';
-import 'package:flutter/material.dart';
-import 'package:pixel_game/game/components/boss_component.dart';
+import 'package:pixel_game/game/art/pixel_art.dart';
 import 'package:pixel_game/game/finger_jump_game.dart';
 
-/// Oyuncunun ekrana dokunmasıyla fırlattığı turuncu mermi.
+/// Kedinin boss'a fırlattığı yün yumağı.
 ///
-/// Hareket: oyuncu konumundan yukarı doğru, [_speed] hızında.
-/// Çarpışma: yalnızca [BossComponent]'a tepki verir.
-/// Temizleme: kamera görüş alanının 1 ekran üstüne geçince kaldırılır.
-///
-/// Tasarım notu:
-///   Boss dışı çarpışmalar (platformlar vb.) görmezden gelinir.
-///   Bu yüzden [onCollisionStart] içinde açık tip kontrolü yapılır.
+/// Flame çarpışma sistemi yerine boss ile tek bir AABB kontrolü yapılır:
+/// sahnede en fazla birkaç mermi ve tek bir boss olduğu için bu en ucuz yol.
 class ProjectileComponent extends PositionComponent
-    with HasGameReference<FingerJumpGame>, CollisionCallbacks {
-  // ─── Sabitler ───────────────────────────────────────────────────────────────
+    with HasGameReference<FingerJumpGame> {
+  static const double _speed = 560.0;
+  static const double _scale = 2.0;
 
-  static const double _speed = 520.0; // px/s — ekranı ~1.7s'de geçer
-  static const double _sideLength = 12.0;
-  static const Color _color = Color(0xFFFF9800); // turuncu
-
-  // ─── Constructor ─────────────────────────────────────────────────────────────
+  static const List<String> _rows = [
+    '..oooo..',
+    '.oPpPPo.',
+    'oPPpPPPo',
+    'oPpPPpPo',
+    'oPPpPpPo',
+    'oPpPPpPo',
+    '.oPPpPo.',
+    '..oooo..',
+  ];
+  static const _pal = {
+    'o': ui.Color(0xFF8A2A56),
+    'P': ui.Color(0xFFF27AA4),
+    'p': ui.Color(0xFFC94A7E),
+  };
+  static ui.Image? _img;
 
   ProjectileComponent({required Vector2 spawnPosition})
-      : super(
-          position: spawnPosition,
-          size: Vector2.all(_sideLength),
-          anchor: Anchor.center,
-        );
-
-  // ─── Yükleme ─────────────────────────────────────────────────────────────────
-
-  @override
-  Future<void> onLoad() async {
-    await super.onLoad();
-
-    add(RectangleComponent(size: size, paint: Paint()..color = _color));
-    add(RectangleHitbox());
-  }
-
-  // ─── Güncelleme ──────────────────────────────────────────────────────────────
+    : super(
+        position: spawnPosition,
+        size: Vector2.all(8 * _scale),
+        anchor: Anchor.center,
+      );
 
   @override
   void update(double dt) {
-    super.update(dt);
-
-    // Yukarı doğru hareket (Y azalır).
     position.y -= _speed * dt;
+    angle += 12 * dt;
 
-    // Kameranın görüş alanından 1 ekran fazla yukarıya çıkınca sil.
-    final cameraTopY =
-        game.camera.viewfinder.position.y - game.size.y / 2;
-    if (position.y < cameraTopY - game.size.y) {
+    final boss = game.activeBoss;
+    if (boss != null && boss.isMounted) {
+      final dx = (position.x - boss.position.x).abs();
+      final dy = (position.y - boss.position.y).abs();
+      if (dx < (boss.size.x + size.x) / 2 && dy < (boss.size.y + size.y) / 2) {
+        boss.takeDamage();
+        removeFromParent();
+        return;
+      }
+    }
+
+    if (position.y < game.cameraTopY - game.size.y * 0.2) {
       removeFromParent();
     }
   }
 
-  // ─── Çarpışma ───────────────────────────────────────────────────────────────
-
   @override
-  void onCollisionStart(
-    Set<Vector2> intersectionPoints,
-    PositionComponent other,
-  ) {
-    super.onCollisionStart(intersectionPoints, other);
-
-    // Yalnızca boss'a çarparsa tepki ver.
-    if (other is BossComponent) {
-      other.takeDamage();
-      removeFromParent();
-    }
+  void render(ui.Canvas canvas) {
+    final img = _img ??= gridToImage(_rows, _pal);
+    canvas.drawImageRect(
+      img,
+      const ui.Rect.fromLTWH(0, 0, 8, 8),
+      ui.Rect.fromLTWH(0, 0, size.x, size.y),
+      pixelPaint,
+    );
   }
 }

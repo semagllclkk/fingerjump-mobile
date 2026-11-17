@@ -1,31 +1,52 @@
 package com.example.pixel_game
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Matrix
-import android.graphics.Rect
-import android.graphics.YuvImage
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import android.util.Log
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.tasks.core.BaseOptions
+import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
-import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
+/**
+ * El takibi köprüsü.
+ *
+ * Performans tasarımı (eski sürümdeki kasmanın nedenleri parantez içinde):
+ *  - Tüm görüntü işleme ve MediaPipe çağrıları tek thread'lik bir executor'da
+ *    çalışır. (Eskiden Android ana thread'inde çalışıp onu her frame
+ *    30–60 ms kilitliyordu.)
+ *  - YUV420 → ARGB dönüşümü doğrudan piksel döngüsüyle yapılır; döndürme +
+ *    ayna aynı döngüde (devrik okuma) uygulanır. (Eskiden YUV → NV21 → JPEG
+ *    sıkıştır → JPEG çöz → döndürülmüş kopya zinciri vardı.)
+ *  - Bitmap ve piksel dizisi yeniden kullanılır; her frame tahsis yapılmaz.
+ *  - MediaPipe VIDEO modunda çalışır: el bir kez bulununca sonraki frame'lerde
+ *    yalnızca landmark takibi yapılır. GPU delegate denenir, olmazsa CPU.
+ *  - Sonuç, processFrame çağrısının cevabı olarak döner. Dart tarafı cevap
+ *    gelmeden yeni frame göndermez → kuyruk birikmez, gecikme sabit kalır.
+ */
 class MainActivity : FlutterActivity() {
 
     private val METHOD_CHANNEL = "finger_jump/hand_tracking"
-    private val EVENT_CHANNEL  = "finger_jump/hand_events"
+    private val TAG = "HandTracking"
 
+    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Yalnızca executor thread'inden erişilir.
     private var handLandmarker: HandLandmarker? = null
-    private var eventSink: EventChannel.EventSink? = null
-    private var frameCount = 0L
+    private var usingGpu = false
+    private var lastTimestampMs = 0L
+    private var pixels: IntArray? = null
+    private var bitmap: Bitmap? = null
 
     // tip → pip çiftleri (yumruk tespiti)
     private val fingerPairs = listOf(
@@ -38,154 +59,209 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startTracking" -> {
-                        Thread {
-                            try {
-                                initMediaPipe()
-                                runOnUiThread { result.success(null) }
-                            } catch (e: Exception) {
-                                runOnUiThread {
-                                    result.error("MEDIAPIPE_ERROR", e.message ?: "Bilinmeyen hata", null)
-                                }
+                    "startTracking" -> executor.execute {
+                        try {
+                            closeLandmarker()
+                            initMediaPipe()
+                            mainHandler.post { result.success(null) }
+                        } catch (e: Exception) {
+                            mainHandler.post {
+                                result.error("MEDIAPIPE_ERROR", e.message ?: "Bilinmeyen hata", null)
                             }
-                        }.start()
+                        }
                     }
-                    "stopTracking" -> {
-                        handLandmarker?.close()
-                        handLandmarker = null
-                        result.success(null)
+                    "stopTracking" -> executor.execute {
+                        closeLandmarker()
+                        mainHandler.post { result.success(null) }
                     }
                     "processFrame" -> {
-                        val y            = call.argument<ByteArray>("y")!!
-                        val u            = call.argument<ByteArray>("u")!!
-                        val v            = call.argument<ByteArray>("v")!!
-                        val yRowStride   = call.argument<Int>("yRowStride")!!
-                        val uvRowStride  = call.argument<Int>("uvRowStride")!!
-                        val uvPixelStride = call.argument<Int>("uvPixelStride")!!
-                        val width        = call.argument<Int>("width")!!
-                        val height       = call.argument<Int>("height")!!
-                        processFrame(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
-                        result.success(null)
+                        val y = call.argument<ByteArray>("y")
+                        val u = call.argument<ByteArray>("u")
+                        val v = call.argument<ByteArray>("v")
+                        val yRowStride = call.argument<Int>("yRowStride") ?: 0
+                        val uvRowStride = call.argument<Int>("uvRowStride") ?: 0
+                        val uvPixelStride = call.argument<Int>("uvPixelStride") ?: 1
+                        val width = call.argument<Int>("width") ?: 0
+                        val height = call.argument<Int>("height") ?: 0
+                        if (y == null || u == null || v == null || width == 0 || height == 0) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        executor.execute {
+                            val out = try {
+                                processFrame(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "processFrame: ${e.message}")
+                                null
+                            }
+                            mainHandler.post { result.success(out) }
+                        }
                     }
                     else -> result.notImplemented()
                 }
             }
-
-        EventChannel(flutterEngine.dartExecutor.binaryMessenger, EVENT_CHANNEL)
-            .setStreamHandler(object : EventChannel.StreamHandler {
-                override fun onListen(args: Any?, sink: EventChannel.EventSink?) { eventSink = sink }
-                override fun onCancel(args: Any?) { eventSink = null }
-            })
     }
 
-    // ─── MediaPipe başlatma ──────────────────────────────────────────────────────
+    override fun onDestroy() {
+        executor.execute { closeLandmarker() }
+        executor.shutdown()
+        super.onDestroy()
+    }
 
-    private fun initMediaPipe() {
-        val assetPath = "flutter_assets/assets/models/hand_landmarker.task"
+    // ─── MediaPipe ───────────────────────────────────────────────────────────────
 
-        val modelBytes = assets.open(assetPath).use { it.readBytes() }
-        val modelBuffer = ByteBuffer.allocateDirect(modelBytes.size).apply {
-            put(modelBytes)
+    private var modelBytes: ByteArray? = null
+
+    private fun buildLandmarker(delegate: Delegate): HandLandmarker {
+        val bytes = modelBytes
+            ?: assets.open("flutter_assets/assets/models/hand_landmarker.task")
+                .use { it.readBytes() }
+                .also { modelBytes = it }
+        val modelBuffer = ByteBuffer.allocateDirect(bytes.size).apply {
+            put(bytes)
             rewind()
         }
-
         val options = HandLandmarker.HandLandmarkerOptions.builder()
             .setBaseOptions(
                 BaseOptions.builder()
                     .setModelAssetBuffer(modelBuffer)
+                    .setDelegate(delegate)
                     .build()
             )
-            .setRunningMode(RunningMode.IMAGE)
+            .setRunningMode(RunningMode.VIDEO)
             .setNumHands(1)
             .setMinHandDetectionConfidence(0.5f)
+            .setMinHandPresenceConfidence(0.5f)
             .setMinTrackingConfidence(0.5f)
             .build()
-
-        handLandmarker = HandLandmarker.createFromOptions(this, options)
+        return HandLandmarker.createFromOptions(this, options)
     }
 
-    // ─── YUV420 → NV21 dönüşümü ─────────────────────────────────────────────────
-    //
-    // Flutter camera paketi Android'de YUV_420_888 formatı kullanır (yuv420).
-    // Y, U, V plane'leri ayrı ByteArray olarak gelir; stride değerleri farklı olabilir.
-    // NV21 = Y plane + interleaved VU plane → YuvImage → JPEG → Bitmap zinciri ile
-    // MediaPipe'ın beklediği Bitmap elde edilir.
+    private fun initMediaPipe() {
+        handLandmarker = try {
+            buildLandmarker(Delegate.GPU).also { usingGpu = true }
+        } catch (e: Throwable) {
+            Log.i(TAG, "GPU delegate kullanılamadı, CPU'ya geçiliyor: ${e.message}")
+            usingGpu = false
+            buildLandmarker(Delegate.CPU)
+        }
+        lastTimestampMs = 0L
+    }
 
-    private fun yuv420ToNv21(
+    private fun closeLandmarker() {
+        try { handLandmarker?.close() } catch (_: Exception) {}
+        handLandmarker = null
+    }
+
+    // ─── YUV420 → ARGB (döndürme + ayna dahil) ─────────────────────────────────
+    //
+    // Ön kamera portrait modunda görüntü 90° dönük + ayna gelir. Eski kodda
+    // 90° CW döndürme + yatay ayna uygulanıyordu; bu ikisinin bileşimi bir
+    // devriktir: hedef(X, Y) = kaynak(x = Y, y = X). Böylece ayrı bir döndürme
+    // kopyasına gerek kalmaz.
+    //
+    // Geniş kareler (≥ 480 px) 2'ye bölünerek örneklenir; MediaPipe girişi
+    // zaten 192–256 px'e küçülttüğü için doğruluk kaybı yoktur.
+
+    private fun toBitmap(
         y: ByteArray, u: ByteArray, v: ByteArray,
         yRowStride: Int, uvRowStride: Int, uvPixelStride: Int,
         width: Int, height: Int
-    ): ByteArray {
-        val nv21 = ByteArray(width * height + 2 * (width / 2) * (height / 2))
+    ): Bitmap {
+        val step = if (width >= 480) 2 else 1
+        val outW = height / step
+        val outH = width / step
 
-        // Y plane — her satır yRowStride genişliğinde, biz sadece width kadar kopyalarız.
-        if (yRowStride == width) {
-            System.arraycopy(y, 0, nv21, 0, width * height)
-        } else {
-            for (row in 0 until height) {
-                System.arraycopy(y, row * yRowStride, nv21, row * width, width)
-            }
+        var px = pixels
+        if (px == null || px.size != outW * outH) {
+            px = IntArray(outW * outH)
+            pixels = px
+        }
+        var bmp = bitmap
+        if (bmp == null || bmp.width != outW || bmp.height != outH) {
+            bmp?.recycle()
+            bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            bitmap = bmp
         }
 
-        // VU plane (NV21 sırası: V önce, U sonra)
-        var offset = width * height
-        for (row in 0 until height / 2) {
-            for (col in 0 until width / 2) {
-                nv21[offset++] = v[row * uvRowStride + col * uvPixelStride]
-                nv21[offset++] = u[row * uvRowStride + col * uvPixelStride]
+        val ySize = y.size
+        val uSize = u.size
+        val vSize = v.size
+        var i = 0
+        for (oy in 0 until outH) {
+            val sx = oy * step
+            val uvCol = (sx shr 1) * uvPixelStride
+            for (ox in 0 until outW) {
+                val sy = ox * step
+                val yi = sy * yRowStride + sx
+                val uvi = (sy shr 1) * uvRowStride + uvCol
+                val yy = if (yi < ySize) (y[yi].toInt() and 0xff) else 0
+                val uu = (if (uvi < uSize) (u[uvi].toInt() and 0xff) else 128) - 128
+                val vv = (if (uvi < vSize) (v[uvi].toInt() and 0xff) else 128) - 128
+
+                // BT.601 tamsayı yaklaşımı
+                var r = yy + ((1436 * vv) shr 10)
+                var g = yy - ((352 * uu + 731 * vv) shr 10)
+                var b = yy + ((1815 * uu) shr 10)
+                if (r < 0) r = 0 else if (r > 255) r = 255
+                if (g < 0) g = 0 else if (g > 255) g = 255
+                if (b < 0) b = 0 else if (b > 255) b = 255
+
+                px[i++] = -0x1000000 or (r shl 16) or (g shl 8) or b
             }
         }
-        return nv21
+        bmp.setPixels(px, 0, outW, 0, 0, outW, outH)
+        return bmp
     }
 
-    // ─── Frame işleme ────────────────────────────────────────────────────────────
-    //
-    // Ön kamera portrait modunda görüntü 90° dönük + ayna gelir.
-    // 90° CW döndürme + yatay flip ile el doğru yöne getirilir.
+    // ─── Frame işleme (executor thread) ─────────────────────────────────────────
 
     private fun processFrame(
         y: ByteArray, u: ByteArray, v: ByteArray,
         yRowStride: Int, uvRowStride: Int, uvPixelStride: Int,
         width: Int, height: Int
-    ) {
-        val lm = handLandmarker ?: return
-        if (frameCount++ % 2 != 0L) return   // her 2 frame'de 1 işle
+    ): Map<String, Any>? {
+        val lm = handLandmarker ?: return null
 
-        try {
-            // YUV420 → NV21 → YuvImage → JPEG → Bitmap
-            val nv21 = yuv420ToNv21(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
-            val yuvImage = YuvImage(nv21, ImageFormat.NV21, width, height, null)
-            val baos = ByteArrayOutputStream()
-            yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, baos)
-            val raw = BitmapFactory.decodeByteArray(baos.toByteArray(), 0, baos.size()) ?: return
+        val bmp = toBitmap(y, u, v, yRowStride, uvRowStride, uvPixelStride, width, height)
+        val mpImage = BitmapImageBuilder(bmp).build()
 
-            // Ön kamera düzeltmesi: 90° CW + yatay ayna
-            val mat = Matrix().apply {
-                postRotate(90f)
-                postScale(-1f, 1f)
+        // VIDEO modu kesin artan zaman damgası ister.
+        var ts = SystemClock.uptimeMillis()
+        if (ts <= lastTimestampMs) ts = lastTimestampMs + 1
+        lastTimestampMs = ts
+
+        val result = try {
+            lm.detectForVideo(mpImage, ts)
+        } catch (e: Exception) {
+            if (usingGpu) {
+                // Bazı cihazlarda GPU oluşturulabiliyor ama çalışmıyor → CPU'ya düş.
+                Log.w(TAG, "GPU tespit hatası, CPU'ya geçiliyor: ${e.message}")
+                closeLandmarker()
+                usingGpu = false
+                try {
+                    handLandmarker = buildLandmarker(Delegate.CPU)
+                    lastTimestampMs = 0L
+                } catch (_: Exception) {}
             }
-            val bitmap = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, mat, true)
-            raw.recycle()
+            return null
+        }
 
-            val mpImage = BitmapImageBuilder(bitmap).build()
-            val result: HandLandmarkerResult = lm.detect(mpImage)
-            bitmap.recycle()
+        val hands = result.landmarks()
+        if (hands.isEmpty()) {
+            return mapOf("found" to false, "isPunch" to false)
+        }
 
-            if (result.landmarks().isEmpty()) {
-                runOnUiThread { eventSink?.success(mapOf("found" to false, "isPunch" to false)) }
-                return
-            }
+        val landmarks = hands[0]
+        val isFist = fingerPairs.count { (tip, pip) ->
+            landmarks[tip].y() > landmarks[pip].y()
+        } >= 3
 
-            val landmarks = result.landmarks()[0]
-            val fingerX = landmarks[8].x().toDouble()
-            val fingerY = landmarks[8].y().toDouble()
-            val isFist  = fingerPairs.count { (tip, pip) ->
-                landmarks[tip].y() > landmarks[pip].y()
-            } >= 3
-
-            runOnUiThread {
-                eventSink?.success(mapOf("found" to true, "fingerX" to fingerX, "fingerY" to fingerY, "isPunch" to isFist))
-            }
-        } catch (_: Exception) { /* sessizce geç */ }
+        return mapOf(
+            "found" to true,
+            "fingerX" to landmarks[8].x().toDouble(),
+            "fingerY" to landmarks[8].y().toDouble(),
+            "isPunch" to isFist,
+        )
     }
 }

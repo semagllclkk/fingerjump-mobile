@@ -1,163 +1,190 @@
 import 'dart:async';
+
 import 'package:camera/camera.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:pixel_game/game/systems/input_controller.dart';
 
-
 /// Ön kamera + MediaPipe Hand Landmark tespiti.
 ///
 /// Mimari:
-///   Flutter → camera paketi → ham frame → MethodChannel → Kotlin → MediaPipe → sonuçlar
+///   camera paketi → YUV420 frame → MethodChannel → Kotlin (arka plan thread)
+///   → doğrudan YUV→ARGB (JPEG yok) → MediaPipe VIDEO modu → sonuç (cevap)
 ///
-/// Kanaldan gelen mesaj formatı:
-///   { "fingerX": 0.42, "isPunch": false }
-///   fingerX : [0, 1]  (index parmak ucu X, ön kamera)
-///   isPunch : tüm 4 parmak kıvrık mı (yumruk tespiti)
-///
-/// Landmark indeksleri (MediaPipe 21 nokta):
-///   8  = INDEX_FINGER_TIP   (hareketler için X)
-///   12 = MIDDLE_FINGER_TIP  ─┐
-///   16 = RING_FINGER_TIP     ├ yumruk kontrolü
-///   20 = PINKY_TIP          ─┘
+/// Önceki sürümdeki kasma nedenleri ve çözümleri:
+///   1. Her kamera frame'i (~30 fps) kanaldan kopyalanıyordu; native taraf
+///      yarısını atsa da kopyalama + kuyruk birikiyordu.
+///      → Aynı anda en fazla BİR frame işlemde ([_busy]). Native cevap
+///        dönmeden yeni frame gönderilmez; kuyruk asla birikmez.
+///   2. Native işlem Android ana (platform) thread'inde çalışıyordu ve
+///      YUV→JPEG→Bitmap→döndür zinciri + MediaPipe her frame onu kilitliyordu.
+///      → Kotlin tarafı tek thread'lik executor'da, JPEG'siz dönüşümle çalışır.
+///   3. MediaPipe IMAGE modunda her frame avuç tespitini baştan yapıyordu.
+///      → VIDEO modu: el bir kez bulununca landmark takibi çok daha ucuz.
+///   4. Sonuçlar ham ve titrekti, el bir frame kaybolunca oyuncu duruyordu.
+///      → EMA yumuşatma + kısa süreli kayıp toleransı + ölü bölge.
 class CameraHandService {
   static const _channel = MethodChannel('finger_jump/hand_tracking');
 
   final InputController _controller;
 
   CameraController? _cam;
-  StreamSubscription<dynamic>? _eventSub;
-
-  // Servis durduruldu mu? Frame göndermeyi durdur.
   bool _isStopped = false;
 
-  // Yumruk debounce — aynı vuruşu birden tetiklememek için.
+  /// Native taraf hâlâ bir frame işliyor mu? (geri basınç)
+  bool _busy = false;
+
+  // ─── Yumuşatma ──────────────────────────────────────────────────────────────
+
+  static const double _emaAlpha = 0.45;
+  static const double _deadZone = 0.06;
+
+  /// Parmağın kamera görüntüsünün ortadaki bu oranlık kısmında gezmesi,
+  /// tam sol-sağ hıza ulaşmak için yeterli (kenarlara uzanmak zorunda kalma).
+  static const double _gain = 1.6;
+
+  /// El bu kadar ardışık sonuçta bulunamazsa giriş sıfırlanır.
+  static const int _maxMisses = 4;
+
+  double _smoothX = 0;
+  int _misses = 0;
+
+  // Yumruk debounce.
   bool _handWasOpen = true;
   DateTime _lastPunch = DateTime(0);
-  static const _punchDebounce = Duration(milliseconds: 800);
+  static const _punchDebounce = Duration(milliseconds: 650);
 
   CameraHandService(this._controller);
 
-  /// Önizleme widget'ı için kamera controller'ını döner.
   CameraController? get cameraController => _cam;
 
-  /// Parmak X pozisyonu (normalized 0–1). Overlay için.
-  final ValueNotifier<double?> fingerXNotifier = ValueNotifier<double?>(null);
-
-  /// Parmak Y pozisyonu (normalized 0–1). Overlay için.
-  final ValueNotifier<double?> fingerYNotifier = ValueNotifier<double?>(null);
+  /// Parmak pozisyonu (normalize 0–1). Overlay için. Tek notifier → tek rebuild.
+  final ValueNotifier<Offset?> fingerNotifier = ValueNotifier<Offset?>(null);
 
   // ─── Yaşam döngüsü ──────────────────────────────────────────────────────────
 
   Future<bool> start() async {
     _isStopped = false;
 
-    // Kamera izni iste.
     final status = await Permission.camera.request();
     if (!status.isGranted) {
       debugPrint('[CameraHandService] Kamera izni reddedildi.');
       return false;
     }
 
-    // Ön kamerayı bul.
     final cameras = await availableCameras();
+    if (cameras.isEmpty) return false;
     final front = cameras.firstWhere(
       (c) => c.lensDirection == CameraLensDirection.front,
       orElse: () => cameras.first,
     );
 
-    // Düşük çözünürlük → düşük gecikme.
-    _cam = CameraController(
+    // Düşük çözünürlük → düşük gecikme. MediaPipe zaten ~256px'e küçültür.
+    final cam = CameraController(
       front,
       ResolutionPreset.low,
       enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.yuv420, // JPEG desteklenmeyen cihazlarda YUV420 kullan
+      imageFormatGroup: ImageFormatGroup.yuv420,
     );
-    await _cam!.initialize();
+    _cam = cam;
+    await cam.initialize();
+    if (_isStopped) {
+      await cam.dispose();
+      return false;
+    }
 
-    // Native MediaPipe kanalını başlat.
     try {
       await _channel.invokeMethod('startTracking');
     } on PlatformException catch (e) {
       debugPrint('[CameraHandService] MediaPipe başlatılamadı: ${e.message}');
-      // Model dosyası eksik veya yanlış — kamera modu devre dışı.
-      _cam?.dispose();
+      await cam.dispose();
       _cam = null;
       return false;
     }
 
-    // Native'den gelen sonuçları dinle.
-    const events = EventChannel('finger_jump/hand_events');
-    _eventSub = events.receiveBroadcastStream().listen(_onHandEvent);
-
-    // Kamera frame'lerini native'e gönder.
-    await _cam!.startImageStream(_sendFrame);
-
+    await cam.startImageStream(_sendFrame);
     debugPrint('[CameraHandService] Başlatıldı.');
     return true;
   }
 
-  /// Servisi durdurur. Native tarafı temizler.
-  /// Restart öncesi çağrıldığında: önce stream'i dur, sonra native'e bildir,
-  /// böylece yeni startTracking geldiğinde eski oturum kapanmış olur.
   Future<void> stop() async {
+    if (_isStopped) return;
     _isStopped = true;
     _controller.normalizedX = 0.0;
-    fingerXNotifier.value = null;
-    fingerYNotifier.value = null;
+    fingerNotifier.value = null;
 
-    // Önce frame akışını kes.
-    try { await _cam?.stopImageStream(); } catch (_) {}
-    // Event kanalını kapat.
-    await _eventSub?.cancel();
-    _eventSub = null;
-    // Native tracking'i durdur (await ile sıraya girer).
-    try { await _channel.invokeMethod('stopTracking'); } catch (_) {}
-    // Kamerayı dispose et.
-    try { _cam?.dispose(); } catch (_) {}
+    final cam = _cam;
     _cam = null;
+    try {
+      if (cam != null && cam.value.isStreamingImages) {
+        await cam.stopImageStream();
+      }
+    } catch (_) {}
+    try {
+      await _channel.invokeMethod('stopTracking');
+    } catch (_) {}
+    try {
+      await cam?.dispose();
+    } catch (_) {}
   }
 
   // ─── Frame gönderme ──────────────────────────────────────────────────────────
 
   void _sendFrame(CameraImage image) {
-    if (_isStopped) return;
+    if (_isStopped || _busy) return; // önceki frame bitmeden yenisini atma
     if (image.planes.length < 3) return;
+    _busy = true;
 
-    // YUV420: planes[0]=Y, planes[1]=U, planes[2]=V
-    // Kotlin tarafı NV21 formatına çevirir → YuvImage → Bitmap → MediaPipe
-    _channel.invokeMethod('processFrame', {
-      'y': image.planes[0].bytes,
-      'u': image.planes[1].bytes,
-      'v': image.planes[2].bytes,
-      'yRowStride': image.planes[0].bytesPerRow,
-      'uvRowStride': image.planes[1].bytesPerRow,
-      'uvPixelStride': image.planes[1].bytesPerPixel ?? 1,
-      'width': image.width,
-      'height': image.height,
-    });
+    _channel
+        .invokeMethod<Map<Object?, Object?>>('processFrame', {
+          'y': image.planes[0].bytes,
+          'u': image.planes[1].bytes,
+          'v': image.planes[2].bytes,
+          'yRowStride': image.planes[0].bytesPerRow,
+          'uvRowStride': image.planes[1].bytesPerRow,
+          'uvPixelStride': image.planes[1].bytesPerPixel ?? 1,
+          'width': image.width,
+          'height': image.height,
+        })
+        .then((result) {
+          if (!_isStopped && result != null) _onHandResult(result);
+        })
+        .catchError((Object e) {
+          debugPrint('[CameraHandService] processFrame hatası: $e');
+        })
+        .whenComplete(() => _busy = false);
   }
 
   // ─── Sonuç işleme ────────────────────────────────────────────────────────────
 
-  void _onHandEvent(dynamic data) {
-    if (data is! Map) return;
+  void _onHandResult(Map<Object?, Object?> data) {
     final found = data['found'] as bool? ?? false;
-    final fingerX = found ? (data['fingerX'] as num?)?.toDouble() : null;
-    final fingerY = found ? (data['fingerY'] as num?)?.toDouble() : null;
     final isPunch = data['isPunch'] as bool? ?? false;
 
-    fingerXNotifier.value = fingerX;
-    fingerYNotifier.value = fingerY;
-
-    if (fingerX != null) {
-      // [0,1] → [-1,1] dönüşümü. Ön kamera ayna görüntüsü — X ters çevrilir.
-      _controller.normalizedX = (0.5 - fingerX) * 2.0;
-    } else {
-      // El kaybolduğunda x sıfırla (oyuncu durduğu yerde kalsın).
-      _controller.normalizedX = 0.0;
+    if (!found) {
+      if (++_misses >= _maxMisses) {
+        _smoothX = 0;
+        _controller.normalizedX = 0.0;
+        fingerNotifier.value = null;
+      }
+      _detectPunch(false);
+      return;
     }
+    _misses = 0;
+
+    final fx = (data['fingerX'] as num).toDouble();
+    final fy = (data['fingerY'] as num).toDouble();
+    fingerNotifier.value = Offset(fx, fy);
+
+    // [0,1] → [-1,1]. Ön kamera ayna görüntüsü — X ters çevrilir.
+    final raw = ((0.5 - fx) * 2.0 * _gain).clamp(-1.0, 1.0);
+    _smoothX = _smoothX * (1 - _emaAlpha) + raw * _emaAlpha;
+
+    final mag = _smoothX.abs();
+    _controller.normalizedX = mag < _deadZone
+        ? 0.0
+        : _smoothX.sign * ((mag - _deadZone) / (1 - _deadZone));
 
     _detectPunch(isPunch);
   }
