@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flame/components.dart';
+import 'package:pixel_game/game/accessories.dart';
 import 'package:pixel_game/game/cats.dart';
 import 'package:pixel_game/game/components/platform_component.dart';
 import 'package:pixel_game/game/finger_jump_game.dart';
@@ -114,6 +115,7 @@ class PlayerComponent extends PositionComponent
     final left = (size.x - w) / 2;
     final top = size.y - h + 2;
 
+    final dst = ui.Rect.fromLTWH(left, top, w, h);
     canvas.drawImageRect(
       img,
       const ui.Rect.fromLTWH(
@@ -122,9 +124,24 @@ class PlayerComponent extends PositionComponent
         CatSprites.size * 1.0,
         CatSprites.size * 1.0,
       ),
-      ui.Rect.fromLTWH(left, top, w, h),
+      dst,
       _paint,
     );
+
+    // Dükkândan takılan aksesuar (ezilme/uzamaya kafayla birlikte uyar).
+    final acc = game.accessory;
+    if (acc != null) {
+      // Pervane yükselirken hızlı, düşerken yavaş döner.
+      final spin = (_t * (rising ? 14 : 5)).floor();
+      AccessoryArt.draw(
+        canvas,
+        acc,
+        dst,
+        frame: spin,
+        flipX: _facingLeft,
+        paint: _paint,
+      );
+    }
   }
 
   // ─── Sweep collision ─────────────────────────────────────────────────────────

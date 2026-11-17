@@ -1,10 +1,12 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:pixel_game/game/accessories.dart';
 import 'package:pixel_game/game/art/pixel_art.dart';
 import 'package:pixel_game/game/art/vines.dart';
 import 'package:pixel_game/game/cats.dart';
 import 'package:pixel_game/game/components/coin_component.dart';
+import 'package:pixel_game/services/save_data.dart';
 
 /// Portfolyodaki çiftlik sahnesinin renkleri.
 class Farm {
@@ -237,16 +239,89 @@ class PixelImage extends StatelessWidget {
   }
 }
 
+/// Kedi + (varsa) aksesuar. Şapkalar kafanın üstüne taşabildiği için üstte
+/// [AccessoryInfo.maxRise] piksellik boşluk bırakılır.
+class CatView extends StatelessWidget {
+  final CatBreed breed;
+  final Accessory? accessory;
+  final int frame;
+  final int accessoryFrame;
+  final double scale;
+
+  const CatView({
+    super.key,
+    required this.breed,
+    this.accessory,
+    this.frame = 0,
+    this.accessoryFrame = 0,
+    this.scale = 4,
+  });
+
+  static double heightFor(double scale) =>
+      (CatSprites.size + AccessoryInfo.maxRise) * scale;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: Size(CatSprites.size * scale, heightFor(scale)),
+      painter: _CatPainter(breed, accessory, frame, accessoryFrame),
+    );
+  }
+}
+
+class _CatPainter extends CustomPainter {
+  final CatBreed breed;
+  final Accessory? accessory;
+  final int frame;
+  final int accessoryFrame;
+  _CatPainter(this.breed, this.accessory, this.frame, this.accessoryFrame);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final img = CatSprites.framesFor(breed)[frame];
+    final u = size.width / CatSprites.size;
+    final rect = Rect.fromLTWH(
+      0,
+      AccessoryInfo.maxRise * u,
+      size.width,
+      CatSprites.size * u,
+    );
+    canvas.drawImageRect(
+      img,
+      Rect.fromLTWH(0, 0, img.width.toDouble(), img.height.toDouble()),
+      rect,
+      pixelPaint,
+    );
+    final a = accessory;
+    if (a != null) AccessoryArt.draw(canvas, a, rect, frame: accessoryFrame);
+  }
+
+  @override
+  bool shouldRepaint(_CatPainter old) =>
+      old.breed != breed ||
+      old.accessory != accessory ||
+      old.frame != frame ||
+      old.accessoryFrame != accessoryFrame;
+}
+
 /// Zıplayan / göz kırpan kedi animasyonu (menüler için).
+///
+/// [accessory] verilmezse ve [useEquipped] true ise, dükkândan takılı olan
+/// aksesuar gösterilir.
 class AnimatedCat extends StatefulWidget {
   final CatBreed breed;
   final double scale;
   final bool bounce;
+  final Accessory? accessory;
+  final bool useEquipped;
+
   const AnimatedCat({
     super.key,
     required this.breed,
     this.scale = 5,
     this.bounce = true,
+    this.accessory,
+    this.useEquipped = true,
   });
 
   @override
@@ -268,29 +343,43 @@ class _AnimatedCatState extends State<AnimatedCat>
 
   @override
   Widget build(BuildContext context) {
-    final frames = CatSprites.framesFor(widget.breed);
-    final size = CatSprites.size * widget.scale;
-    return SizedBox(
-      width: size,
-      height: size + (widget.bounce ? 14 : 0),
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (_, _) {
-          final t = _c.value;
-          final up = widget.bounce ? (t < 0.5 ? t * 2 : 2 - t * 2) : 0.0;
-          final eased = Curves.easeOut.transform(up);
-          final frame = t > 0.86 && t < 0.92 ? 2 : (t < 0.5 ? 0 : 1);
-          return Stack(
-            children: [
-              Positioned(
-                left: 0,
-                top: widget.bounce ? 14 - eased * 14 : 0,
-                child: PixelImage(frames[frame], scale: widget.scale),
-              ),
-            ],
-          );
-        },
-      ),
+    final w = CatSprites.size * widget.scale;
+    final h = CatView.heightFor(widget.scale);
+    const lift = 14.0;
+    return ValueListenableBuilder<SaveData>(
+      valueListenable: SaveData.current,
+      builder: (_, save, _) {
+        final acc =
+            widget.accessory ?? (widget.useEquipped ? save.equipped : null);
+        return SizedBox(
+          width: w,
+          height: h + (widget.bounce ? lift : 0),
+          child: AnimatedBuilder(
+            animation: _c,
+            builder: (_, _) {
+              final t = _c.value;
+              final up = widget.bounce ? (t < 0.5 ? t * 2 : 2 - t * 2) : 0.0;
+              final eased = Curves.easeOut.transform(up);
+              final frame = t > 0.86 && t < 0.92 ? 2 : (t < 0.5 ? 0 : 1);
+              return Stack(
+                children: [
+                  Positioned(
+                    left: 0,
+                    top: widget.bounce ? lift - eased * lift : 0,
+                    child: CatView(
+                      breed: widget.breed,
+                      accessory: acc,
+                      frame: frame,
+                      accessoryFrame: (t * 16).floor(),
+                      scale: widget.scale,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
     );
   }
 }
@@ -378,4 +467,38 @@ class _GrassPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_GrassPainter old) => false;
+}
+
+/// Geri düğmeli ekran başlığı.
+class FarmTopBar extends StatelessWidget {
+  final String title;
+  const FarmTopBar({super.key, required this.title});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      height: 56,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned(
+            left: 4,
+            child: IconButton(
+              icon: const Icon(Icons.arrow_back_ios_new, color: Farm.woodDark),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+          Text(
+            title,
+            style: Farm.text(40, color: Farm.woodDark).copyWith(
+              shadows: const [
+                Shadow(color: Colors.white, offset: Offset(2, 2)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

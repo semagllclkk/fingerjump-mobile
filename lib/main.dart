@@ -6,20 +6,48 @@ import 'package:pixel_game/game/cats.dart';
 import 'package:pixel_game/game/finger_jump_game.dart';
 import 'package:pixel_game/services/camera_hand_service.dart';
 import 'package:pixel_game/services/gyroscope_service.dart';
+import 'package:pixel_game/services/music_service.dart';
 import 'package:pixel_game/services/save_data.dart';
 import 'package:pixel_game/ui/farm_theme.dart';
 import 'package:pixel_game/ui/hud_widget.dart';
+import 'package:pixel_game/ui/shop_screen.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
+  await SaveData.load();
   runApp(const FingerJumpApp());
+  MusicService.instance.sync();
 }
 
 enum ControlMode { gyroscope, camera }
 
-class FingerJumpApp extends StatelessWidget {
+class FingerJumpApp extends StatefulWidget {
   const FingerJumpApp({super.key});
+
+  @override
+  State<FingerJumpApp> createState() => _FingerJumpAppState();
+}
+
+class _FingerJumpAppState extends State<FingerJumpApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  /// Uygulama arka plana geçince müzik durur, öne gelince devam eder.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    MusicService.instance.setForeground(state == AppLifecycleState.resumed);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,101 +84,121 @@ class StartScreen extends StatefulWidget {
 }
 
 class _StartScreenState extends State<StartScreen> {
-  SaveData? _save;
-
-  @override
-  void initState() {
-    super.initState();
-    _reload();
-  }
-
-  Future<void> _reload() async {
-    final s = await SaveData.load();
-    if (mounted) setState(() => _save = s);
-  }
-
   @override
   Widget build(BuildContext context) {
-    final save = _save;
-    final cat = CatInfo.of(save?.cat ?? CatBreed.sarman);
+    return ValueListenableBuilder<SaveData>(
+      valueListenable: SaveData.current,
+      builder: (context, save, _) => _build(context, save),
+    );
+  }
+
+  Widget _build(BuildContext context, SaveData save) {
+    final cat = CatInfo.of(save.cat);
     return Scaffold(
       body: FarmSkyBackground(
         child: SafeArea(
-          child: Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'FINGER\nJUMP',
-                    textAlign: TextAlign.center,
-                    style: Farm.text(84, color: Farm.pinkLight, height: 0.85)
-                        .copyWith(
-                          shadows: const [
-                            Shadow(color: Farm.woodDark, offset: Offset(4, 4)),
-                            Shadow(color: Farm.pink, offset: Offset(2, 2)),
-                          ],
-                        ),
+          child: Stack(
+            children: [
+              Positioned(
+                top: 8,
+                right: 10,
+                child: _IconChip(
+                  icon: save.music ? Icons.music_note : Icons.music_off,
+                  tooltip: save.music ? 'Müziği kapat' : 'Müziği aç',
+                  onTap: MusicService.instance.toggle,
+                ),
+              ),
+              Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 24,
+                    vertical: 16,
                   ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Kedini seç, çiçekli kartlara zıpla!',
-                    style: Farm.text(22, color: Farm.woodDark),
-                  ),
-                  const SizedBox(height: 24),
-                  AnimatedCat(breed: cat.breed, scale: 7),
-                  const SizedBox(height: 8),
-                  VineCard(
-                    padding: const EdgeInsets.fromLTRB(26, 16, 26, 16),
-                    child: Column(
-                      children: [
-                        Text(cat.name, style: Farm.text(30)),
-                        Text(
-                          cat.perkTitle,
-                          style: Farm.text(20, color: Farm.pink),
-                        ),
-                        const SizedBox(height: 6),
-                        Row(
-                          mainAxisSize: MainAxisSize.min,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'FINGER\nJUMP',
+                        textAlign: TextAlign.center,
+                        style:
+                            Farm.text(
+                              84,
+                              color: Farm.pinkLight,
+                              height: 0.85,
+                            ).copyWith(
+                              shadows: const [
+                                Shadow(
+                                  color: Farm.woodDark,
+                                  offset: Offset(4, 4),
+                                ),
+                                Shadow(color: Farm.pink, offset: Offset(2, 2)),
+                              ],
+                            ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Kedini seç, çiçekli kartlara zıpla!',
+                        style: Farm.text(22, color: Farm.woodDark),
+                      ),
+                      const SizedBox(height: 24),
+                      AnimatedCat(breed: cat.breed, scale: 7),
+                      const SizedBox(height: 8),
+                      VineCard(
+                        padding: const EdgeInsets.fromLTRB(26, 16, 26, 16),
+                        child: Column(
                           children: [
-                            const SpinningCoin(scale: 2),
-                            const SizedBox(width: 6),
-                            Text('${save?.coins ?? 0}', style: Farm.text(24)),
-                            const SizedBox(width: 18),
+                            Text(cat.name, style: Farm.text(30)),
                             Text(
-                              'En iyi: ${save?.highScore ?? 0} m',
-                              style: Farm.text(24, color: Farm.ink2),
+                              cat.perkTitle,
+                              style: Farm.text(20, color: Farm.pink),
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SpinningCoin(scale: 2),
+                                const SizedBox(width: 6),
+                                Text('${save.coins}', style: Farm.text(24)),
+                                const SizedBox(width: 18),
+                                Text(
+                                  'En iyi: ${save.highScore} m',
+                                  style: Farm.text(24, color: Farm.ink2),
+                                ),
+                              ],
                             ),
                           ],
                         ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(height: 28),
+                      WoodButton(
+                        label: 'OYNA',
+                        fontSize: 36,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 56,
+                          vertical: 6,
+                        ),
+                        onPressed: () => _go(const CatSelectScreen()),
+                      ),
+                      const SizedBox(height: 16),
+                      WoodButton(
+                        label: 'DÜKKAN',
+                        color: Farm.green,
+                        fontSize: 26,
+                        onPressed: () => _go(const ShopScreen()),
+                      ),
+                      const SizedBox(height: 70),
+                    ],
                   ),
-                  const SizedBox(height: 28),
-                  WoodButton(
-                    label: 'OYNA',
-                    fontSize: 36,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 56,
-                      vertical: 6,
-                    ),
-                    onPressed: () => _go(const CatSelectScreen()),
-                  ),
-                  const SizedBox(height: 70),
-                ],
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Future<void> _go(Widget page) async {
-    await Navigator.of(context).push(_fade(page));
-    _reload(); // geri dönünce coin / rekor / kedi güncellensin
-  }
+  void _go(Widget page) => Navigator.of(context).push(_fade(page));
 }
 
 // ─── KEDİ SEÇİMİ ─────────────────────────────────────────────────────────────
@@ -181,7 +229,7 @@ class _CatSelectScreenState extends State<CatSelectScreen> {
         child: SafeArea(
           child: Column(
             children: [
-              _TopBar(title: 'Kedini Seç'),
+              FarmTopBar(title: 'Kedini Seç'),
               const SizedBox(height: 4),
               AnimatedCat(key: ValueKey(_selected), breed: _selected, scale: 6),
               Padding(
@@ -262,7 +310,6 @@ class _CatTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final frames = CatSprites.framesFor(info.breed);
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
@@ -285,44 +332,18 @@ class _CatTile extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            PixelImage(frames[0], scale: 4),
+            ValueListenableBuilder<SaveData>(
+              valueListenable: SaveData.current,
+              builder: (_, save, _) => CatView(
+                breed: info.breed,
+                accessory: save.equipped,
+                scale: 3.5,
+              ),
+            ),
             const SizedBox(height: 2),
             Text(info.name, style: Farm.text(20, height: 1)),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _TopBar extends StatelessWidget {
-  final String title;
-  const _TopBar({required this.title});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: double.infinity,
-      height: 56,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          Positioned(
-            left: 4,
-            child: IconButton(
-              icon: const Icon(Icons.arrow_back_ios_new, color: Farm.woodDark),
-              onPressed: () => Navigator.pop(context),
-            ),
-          ),
-          Text(
-            title,
-            style: Farm.text(40, color: Farm.woodDark).copyWith(
-              shadows: const [
-                Shadow(color: Colors.white, offset: Offset(2, 2)),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -341,7 +362,7 @@ class ModeSelectionScreen extends StatelessWidget {
         child: SafeArea(
           child: Column(
             children: [
-              _TopBar(title: 'Nasıl oynayalım?'),
+              FarmTopBar(title: 'Nasıl oynayalım?'),
               Expanded(
                 child: Center(
                   child: SingleChildScrollView(
@@ -446,7 +467,10 @@ class GameScreen extends StatefulWidget {
 }
 
 class _GameScreenState extends State<GameScreen> {
-  late final FingerJumpGame _game = FingerJumpGame(breed: widget.breed);
+  late final FingerJumpGame _game = FingerJumpGame(
+    breed: widget.breed,
+    accessory: SaveData.current.value.equipped,
+  );
   GyroscopeService? _gyro;
   CameraHandService? _camera;
 
@@ -784,6 +808,40 @@ class _Stat extends StatelessWidget {
         ),
         Text(label, style: Farm.text(18, color: Farm.ink2)),
       ],
+    );
+  }
+}
+
+/// Yuvarlak köşeli küçük ikon düğmesi (müzik aç/kapat vb.).
+class _IconChip extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _IconChip({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: Farm.parch,
+            border: Border.all(color: Farm.wood, width: 3),
+            borderRadius: BorderRadius.circular(4),
+            boxShadow: const [
+              BoxShadow(color: Farm.woodDark, offset: Offset(0, 3)),
+            ],
+          ),
+          child: Icon(icon, color: Farm.pink, size: 26),
+        ),
+      ),
     );
   }
 }

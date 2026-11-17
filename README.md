@@ -24,6 +24,24 @@ Oyun başında 5 kediden biri seçilir; her birinin küçük bir yeteneği var:
 | Pamuk (Van) | Van Zıplayışı — %8 daha yükseğe zıplar |
 | Üç Renkli | Uğurlu Pati — her coin 2 sayılır |
 
+## Dükkân
+
+Toplanan coin'lerle ana menüdeki **Dükkan**'dan kedilere aksesuar alınır (satın alınan hemen takılır, istenince çıkarılır):
+
+| Aksesuar | Fiyat |
+|---|---|
+| Pembe Fiyonk | 15 |
+| Çiçekli Taç | 25 |
+| Şaka Gözlüğü | 30 |
+| Pervaneli Şapka (zıplarken pervanesi döner) | 40 |
+| Cadı Şapkası | 60 |
+| Büyücü Şapkası | 75 |
+
+## Müzik
+
+Hafif, eğlenceli bir "cozy loop" (`assets/audio/cozy_loop.ogg`, ~42 sn, boşluksuz döngü).
+Tamamen `tool/make_music.py` ile sentezlendi — telifsiz. Ana menüdeki nota düğmesiyle açılıp kapanır.
+
 ## Platformlar
 
 Portfolyodaki çiftlik sahnesinin beceri kartlarından esinlenen, sarmaşıklı çiçekli piksel kartlar:

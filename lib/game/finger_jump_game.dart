@@ -4,6 +4,7 @@ import 'dart:ui' show Color, VoidCallback;
 import 'package:flame/events.dart';
 import 'package:flame/game.dart';
 import 'package:flutter/foundation.dart' show ValueNotifier;
+import 'package:pixel_game/game/accessories.dart';
 import 'package:pixel_game/game/cats.dart';
 import 'package:pixel_game/game/components/boss_component.dart';
 import 'package:pixel_game/game/components/coin_component.dart';
@@ -23,7 +24,11 @@ import 'package:pixel_game/game/systems/input_controller.dart';
 ///     `world.children.whereType` taraması yapılmıyor.
 ///   * Tüm sprite'lar önbellekli `ui.Image` → render başına tek drawImage.
 class FingerJumpGame extends FlameGame with TapCallbacks {
-  FingerJumpGame({CatBreed breed = CatBreed.sarman}) : cat = CatInfo.of(breed);
+  FingerJumpGame({CatBreed breed = CatBreed.sarman, this.accessory})
+    : cat = CatInfo.of(breed);
+
+  /// Kedinin taktığı dükkân aksesuarı (yoksa null).
+  Accessory? accessory;
 
   static const Color skyTop = Color(0xFF8FD3FF);
 
